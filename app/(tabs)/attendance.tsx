@@ -1,0 +1,439 @@
+import { useEffect, useMemo, useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { supabase } from "../../src/lib/supabase";
+
+type EventRow = {
+  id: string;
+  name: string;
+  location: string | null;
+  event_date: string | null;
+  start_time: string | null;
+  end_time: string | null;
+};
+
+type AttendanceInsert = {
+  event_id: string;
+  full_name: string;
+  document: string;
+  neighborhood: string;
+  phone: string | null;
+  invited_by: string | null;
+  // created_by?: string | null; // ⚠️ solo si tu tabla lo tiene; si te da 400, déjalo comentado
+};
+
+// ✅ Lista fija (sin tabla neighborhoods)
+const BARRIOS_VEREDAS: string[] = [
+  "La Veta",
+  "Zarzal La Luz",
+  "Zarzal Curazao",
+  "Ancon",
+  "El Noral",
+  "El Salado",
+  "Sabaneta",
+  "Quebrada Arriba",
+  "Alvarado",
+  "Montañita",
+  "Peñolcito",
+  "Cabuyal",
+  "Granizal",
+  "El Convento",
+  "Fontidueño",
+  "Cristo Rey",
+  "Simon Bolivar",
+  "Obrero",
+  "Yarumito",
+  "Las Vegas",
+  "Tobon Quintero",
+  "La Asunción",
+  "La Azulita",
+  "El Porvenir",
+  "Villanueva",
+  "El Recreo",
+  "El Remanso",
+  "Pedregal",
+  "La Misericordia",
+  "Machado",
+  "San Juan",
+  "Maria",
+  "Tablazo-Canoas",
+  "El Mojon",
+  "C. Multiple",
+  "Fatima",
+  "Pedrera",
+  "San Francisco",
+  "Miraflores",
+];
+
+function fmtEventLine(ev: EventRow) {
+  const date = ev.event_date ?? "";
+  const st = ev.start_time ? `| ${String(ev.start_time).slice(0, 5)}` : "";
+  const et = ev.end_time ? `- ${String(ev.end_time).slice(0, 5)}` : "";
+  const loc = ev.location ? `| ${ev.location}` : "";
+  return `${date} ${st} ${et} ${loc}`.replace(/\s+/g, " ").trim();
+}
+
+export default function AttendanceScreen() {
+  const [loading, setLoading] = useState(false);
+
+  // ✅ puede haber varios eventos asignados
+  const [assignedEvents, setAssignedEvents] = useState<EventRow[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState<string>("");
+
+  const selectedEvent = useMemo(() => {
+    return assignedEvents.find((e) => e.id === selectedEventId) ?? null;
+  }, [assignedEvents, selectedEventId]);
+
+  // Form asistentes
+  const [fullName, setFullName] = useState("");
+  const [document, setDocument] = useState("");
+  const [neighborhood, setNeighborhood] = useState("");
+  const [phone, setPhone] = useState("");
+  const [invitedBy, setInvitedBy] = useState("");
+
+  // Dropdown barrios
+  const [showBarrioList, setShowBarrioList] = useState(false);
+  const [barrioQuery, setBarrioQuery] = useState("");
+
+  // Dropdown eventos
+  const [showEventList, setShowEventList] = useState(false);
+
+  const canSave = useMemo(() => {
+    return fullName.trim() && document.trim() && neighborhood.trim() && !!selectedEventId;
+  }, [fullName, document, neighborhood, selectedEventId]);
+
+  const barriosFiltrados = useMemo(() => {
+    const q = barrioQuery.trim().toLowerCase();
+    if (!q) return BARRIOS_VEREDAS;
+    return BARRIOS_VEREDAS.filter((b) => b.toLowerCase().includes(q));
+  }, [barrioQuery]);
+
+  const loadAssignedEvents = async () => {
+    setLoading(true);
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      const uid = authData?.user?.id;
+      if (!uid) {
+        Alert.alert("Sesión", "Sin sesión.");
+        return;
+      }
+
+      // 1) Traer ids asignados (NO ORDER por columnas que no existen)
+      const staffRes = await supabase
+        .from("event_staff")
+        .select("event_id")
+        .eq("user_id", uid);
+
+      if (staffRes.error) throw staffRes.error;
+
+      const ids = Array.from(
+        new Set((staffRes.data ?? []).map((r: any) => String(r.event_id)).filter(Boolean))
+      );
+
+      if (ids.length === 0) {
+        setAssignedEvents([]);
+        setSelectedEventId("");
+        return;
+      }
+
+      // 2) Traer eventos por ids
+      const evRes = await supabase
+        .from("events")
+        .select("id,name,location,event_date,start_time,end_time")
+        .in("id", ids);
+
+      if (evRes.error) throw evRes.error;
+
+      const list = (evRes.data ?? []) as EventRow[];
+
+      // Orden simple por fecha/hora (en frontend)
+      list.sort((a, b) => {
+        const ka = `${a.event_date ?? ""} ${a.start_time ?? ""}`.trim();
+        const kb = `${b.event_date ?? ""} ${b.start_time ?? ""}`.trim();
+        return kb.localeCompare(ka);
+      });
+
+      setAssignedEvents(list);
+
+      // Mantener selección si aún existe, si no seleccionar primero
+      setSelectedEventId((prev) => {
+        if (prev && list.some((x) => x.id === prev)) return prev;
+        return list[0]?.id ?? "";
+      });
+    } catch (err: any) {
+      Alert.alert("Error", err?.message ?? "Error cargando eventos asignados");
+      setAssignedEvents([]);
+      setSelectedEventId("");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAssignedEvents();
+  }, []);
+
+  const onSave = async () => {
+    if (!selectedEventId) {
+      Alert.alert("Sin evento", "Selecciona un evento.");
+      return;
+    }
+    if (!canSave) {
+      Alert.alert("Faltan datos", "Nombre, documento y barrio/vereda son obligatorios.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const payload: AttendanceInsert = {
+        event_id: selectedEventId,
+        full_name: fullName.trim(),
+        document: document.trim(),
+        neighborhood: neighborhood.trim(),
+        phone: phone.trim() || null,
+        invited_by: invitedBy.trim() || null,
+      };
+
+      const res = await supabase.from("attendance").insert(payload);
+      if (res.error) throw res.error;
+
+      Alert.alert("Listo", "Asistente registrado.");
+      setFullName("");
+      setDocument("");
+      setNeighborhood("");
+      setPhone("");
+      setInvitedBy("");
+      setShowBarrioList(false);
+      setBarrioQuery("");
+    } catch (err: any) {
+      Alert.alert("Error", err?.message ?? "No se pudo guardar");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onSignOut = async () => {
+    await supabase.auth.signOut();
+    // si tienes /login en app/login.tsx
+    // (si tu login está en app/login.tsx, esto está perfecto)
+    // si está en app/(auth)/login.tsx, ajusta la ruta
+    // pero por tus capturas es /login
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { router } = require("expo-router");
+    router.replace("/login");
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.container}>
+      <Text style={styles.h1}>Asistencia</Text>
+
+      {/* Evento asignado */}
+      <View style={styles.card}>
+        <Text style={styles.h2}>Evento asignado</Text>
+
+        {assignedEvents.length === 0 ? (
+          <Text style={styles.small}>No tienes eventos asignados todavía.</Text>
+        ) : (
+          <>
+            <Text style={styles.label}>Selecciona evento</Text>
+
+            <Pressable
+              style={[styles.input, { justifyContent: "center" }]}
+              onPress={() => setShowEventList((v) => !v)}
+            >
+              <Text style={{ opacity: selectedEvent ? 1 : 0.5 }}>
+                {selectedEvent ? selectedEvent.name : "Selecciona un evento"}
+              </Text>
+              {selectedEvent ? <Text style={styles.small}>{fmtEventLine(selectedEvent)}</Text> : null}
+            </Pressable>
+
+            {showEventList && (
+              <View style={styles.dropBox}>
+                <ScrollView style={{ maxHeight: 220 }}>
+                  {assignedEvents.map((ev) => {
+                    const active = ev.id === selectedEventId;
+                    return (
+                      <Pressable
+                        key={ev.id}
+                        style={[styles.dropItem, active && { backgroundColor: "#f3f4f6" }]}
+                        onPress={() => {
+                          setSelectedEventId(ev.id);
+                          setShowEventList(false);
+                        }}
+                      >
+                        <Text style={{ fontWeight: "800" }}>{ev.name}</Text>
+                        <Text style={styles.small}>{fmtEventLine(ev)}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
+          </>
+        )}
+
+        <Pressable style={[styles.btnGray, loading && { opacity: 0.7 }]} onPress={loadAssignedEvents} disabled={loading}>
+          <Text style={styles.btnText}>Actualizar eventos asignados</Text>
+        </Pressable>
+      </View>
+
+      {/* Registrar asistente */}
+      <View style={styles.card}>
+        <Text style={styles.h2}>Registrar asistente</Text>
+
+        <Text style={styles.label}>Nombre</Text>
+        <TextInput style={styles.input} value={fullName} onChangeText={setFullName} placeholder="Nombre completo" />
+
+        <Text style={styles.label}>Documento</Text>
+        <TextInput
+          style={styles.input}
+          value={document}
+          onChangeText={setDocument}
+          placeholder="Cédula / documento"
+          autoCapitalize="none"
+        />
+
+        <Text style={styles.label}>Barrio / Vereda</Text>
+
+        <Pressable
+          style={[styles.input, { justifyContent: "center" }]}
+          onPress={() => setShowBarrioList((v) => !v)}
+        >
+          <Text style={{ opacity: neighborhood ? 1 : 0.5 }}>
+            {neighborhood || "Selecciona un barrio / vereda"}
+          </Text>
+        </Pressable>
+
+        {showBarrioList && (
+          <View style={styles.dropBox}>
+            <TextInput
+              style={styles.dropSearch}
+              value={barrioQuery}
+              onChangeText={setBarrioQuery}
+              placeholder="Buscar barrio/vereda…"
+              autoCapitalize="none"
+            />
+            <ScrollView style={{ maxHeight: 240 }}>
+              {barriosFiltrados.map((b) => (
+                <Pressable
+                  key={b}
+                  style={styles.dropItem}
+                  onPress={() => {
+                    setNeighborhood(b);
+                    setShowBarrioList(false);
+                    setBarrioQuery("");
+                  }}
+                >
+                  <Text>{b}</Text>
+                </Pressable>
+              ))}
+              {barriosFiltrados.length === 0 && (
+                <View style={styles.dropEmpty}>
+                  <Text style={styles.small}>No hay coincidencias.</Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        )}
+
+        <Text style={styles.label}>Teléfono</Text>
+        <TextInput
+          style={styles.input}
+          value={phone}
+          onChangeText={setPhone}
+          placeholder="Opcional"
+          autoCapitalize="none"
+          keyboardType="phone-pad"
+        />
+
+        <Text style={styles.label}>Quién lo invita</Text>
+        <TextInput style={styles.input} value={invitedBy} onChangeText={setInvitedBy} placeholder="Opcional" />
+
+        <Pressable
+          style={[styles.btn, (!canSave || loading) && { opacity: 0.6 }]}
+          onPress={onSave}
+          disabled={!canSave || loading}
+        >
+          <Text style={styles.btnText}>{loading ? "Guardando..." : "Guardar asistente"}</Text>
+        </Pressable>
+
+        <Pressable
+          style={[styles.btnDanger, { marginTop: 10 }, loading && { opacity: 0.7 }]}
+          onPress={onSignOut}
+          disabled={loading}
+        >
+          <Text style={styles.btnText}>Cerrar sesión</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { padding: 16, paddingBottom: 28 },
+  h1: { fontSize: 22, fontWeight: "800", marginBottom: 10 },
+  h2: { fontSize: 16, fontWeight: "800", marginBottom: 10 },
+  small: { fontSize: 12, opacity: 0.8 },
+  card: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 14,
+    backgroundColor: "white",
+  },
+  label: { fontSize: 12, fontWeight: "700", marginBottom: 6 },
+  input: {
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+  },
+  btn: {
+    backgroundColor: "#111827",
+    padding: 14,
+    borderRadius: 10,
+    alignItems: "center",
+    marginTop: 6,
+  },
+  btnGray: {
+    backgroundColor: "#374151",
+    padding: 14,
+    borderRadius: 10,
+    alignItems: "center",
+    marginTop: 10,
+  },
+  btnDanger: {
+    backgroundColor: "#7f1d1d",
+    padding: 14,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  btnText: { color: "white", fontWeight: "800" },
+
+  dropBox: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 10,
+    marginTop: -6,
+    marginBottom: 10,
+    backgroundColor: "white",
+    overflow: "hidden",
+  },
+  dropSearch: {
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  dropItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+  },
+  dropEmpty: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+});

@@ -1,98 +1,137 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { router } from "expo-router";
+import { useEffect, useState } from "react";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { supabase } from "../../src/lib/supabase";
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+type EventRow = {
+  id: string;
+  name: string;
+  location: string | null;
+  event_date: string | null;
+  start_time: string | null;
+  end_time: string | null;
+};
 
-export default function HomeScreen() {
+export default function MyEvents() {
+  const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState<EventRow[]>([]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const uid = userData?.user?.id;
+      if (!uid) {
+        router.replace("/login");
+        return;
+      }
+
+      // 1) traer ids asignados
+      const staffRes = await supabase
+        .from("event_staff")
+        .select("event_id")
+        .eq("user_id", uid);
+
+      if (staffRes.error) throw staffRes.error;
+
+      const ids = Array.from(
+        new Set((staffRes.data ?? []).map((r: any) => String(r.event_id)).filter(Boolean))
+      );
+
+      if (ids.length === 0) {
+        setEvents([]);
+        return;
+      }
+
+      // 2) traer eventos
+      const evRes = await supabase
+        .from("events")
+        .select("id,name,location,event_date,start_time,end_time")
+        .in("id", ids);
+
+      if (evRes.error) throw evRes.error;
+
+      const list = (evRes.data ?? []) as EventRow[];
+      list.sort((a, b) => {
+        const ka = `${a.event_date ?? ""} ${a.start_time ?? ""}`.trim();
+        const kb = `${b.event_date ?? ""} ${b.start_time ?? ""}`.trim();
+        return kb.localeCompare(ka);
+      });
+
+      setEvents(list);
+    } catch (e: any) {
+      Alert.alert("Error", e?.message ?? "Error cargando eventos");
+      setEvents([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const onSignOut = async () => {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <View style={styles.container}>
+      <Text style={styles.h1}>Mis eventos</Text>
+      <Text style={styles.small}>{loading ? "Cargando..." : "Sesión activa."}</Text>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+      <View style={styles.list}>
+        {loading ? null : events.length === 0 ? (
+          <Text style={styles.empty}>No tienes eventos asignados todavía.</Text>
+        ) : (
+          events.map((ev) => (
+            <View key={ev.id} style={styles.card}>
+              <Text style={styles.title}>{ev.name}</Text>
+              <Text style={styles.small}>
+                {ev.event_date ?? ""}
+                {ev.start_time ? ` | ${String(ev.start_time).slice(0, 5)}` : ""}
+                {ev.end_time ? ` - ${String(ev.end_time).slice(0, 5)}` : ""}
+                {ev.location ? ` | ${ev.location}` : ""}
+              </Text>
+
+              <Pressable
+                style={[styles.btn, { marginTop: 10 }]}
+                onPress={() => router.push(`/(tabs)/attendance`)}
+              >
+                <Text style={styles.btnText}>Tomar asistencia</Text>
+              </Pressable>
+            </View>
+          ))
+        )}
+      </View>
+
+      <Pressable style={[styles.btn, { backgroundColor: "#111827" }]} onPress={load}>
+        <Text style={styles.btnText}>Actualizar</Text>
+      </Pressable>
+
+      <Pressable style={[styles.btn, { backgroundColor: "#374151", marginTop: 10 }]} onPress={onSignOut}>
+        <Text style={styles.btnText}>Cerrar sesión</Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  container: { flex: 1, padding: 16, paddingBottom: 24 },
+  h1: { fontSize: 22, fontWeight: "800", marginBottom: 6 },
+  small: { fontSize: 12, opacity: 0.8 },
+  list: { marginTop: 14, flex: 1 },
+  empty: { fontSize: 13, opacity: 0.8, marginTop: 10 },
+  card: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    backgroundColor: "white",
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-  },
+  title: { fontSize: 16, fontWeight: "800" },
+  btn: { backgroundColor: "#111827", padding: 14, borderRadius: 10, alignItems: "center" },
+  btnText: { color: "white", fontWeight: "800" },
 });
