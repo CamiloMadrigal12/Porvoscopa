@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
@@ -15,7 +15,6 @@ export default function TabLayout() {
 
         if (!uid) {
           setRole(null);
-          setReady(true);
           return;
         }
 
@@ -37,24 +36,20 @@ export default function TabLayout() {
   // ✅ Evita render antes de tener rol
   if (!ready) return null;
 
-  // ✅ flags por rol (más legible y fácil de mantener)
-  const canSeeAttendance = useMemo(() => role === "OPERADOR", [role]);
-  const canSeeAdmin = useMemo(() => role === "ADMIN", [role]);
-  const canSeeMetrics = useMemo(() => role === "METRICAS" || role === "ADMIN", [role]);
+  // ✅ NO hooks aquí (sin useMemo)
+  const canSeeAttendance = role === "OPERADOR";
+  const canSeeAdmin = role === "ADMIN";
+  const canSeeMetrics = role === "METRICAS" || role === "ADMIN";
 
   // ⚙️ Decide si METRICAS también ve "Mis eventos"
-  const metricsCanSeeIndex = false; // <- cambia a true si quieres que METRICAS vea "Mis eventos"
-  const canSeeIndex = useMemo(() => {
-    if (role === "OPERADOR" || role === "ADMIN") return true;
-    if (role === "METRICAS") return metricsCanSeeIndex;
-    return false;
-  }, [role]);
+  const metricsCanSeeIndex = false; // cambia a true si quieres
+  const canSeeIndex =
+    role === "OPERADOR" || role === "ADMIN" || (role === "METRICAS" && metricsCanSeeIndex);
 
   return (
     <Tabs
       screenOptions={{
         headerShown: true,
-        // ✅ WEB: oculta la barra inferior
         tabBarStyle: Platform.OS === "web" ? { display: "none" } : undefined,
       }}
     >
@@ -76,7 +71,7 @@ export default function TabLayout() {
         }}
       />
 
-      {/* Scanner: oculto */}
+      {/* Scanner oculto */}
       <Tabs.Screen name="scanner" options={{ href: null }} />
 
       {/* Admin */}
