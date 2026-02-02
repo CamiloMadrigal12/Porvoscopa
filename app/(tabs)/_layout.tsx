@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
@@ -34,50 +34,70 @@ export default function TabLayout() {
     run();
   }, []);
 
-  // ✅ Evita que el tab layout renderice antes de tener rol (sobre todo en web)
+  // ✅ Evita render antes de tener rol
   if (!ready) return null;
+
+  // ✅ flags por rol (más legible y fácil de mantener)
+  const canSeeAttendance = useMemo(() => role === "OPERADOR", [role]);
+  const canSeeAdmin = useMemo(() => role === "ADMIN", [role]);
+  const canSeeMetrics = useMemo(() => role === "METRICAS" || role === "ADMIN", [role]);
+
+  // ⚙️ Decide si METRICAS también ve "Mis eventos"
+  const metricsCanSeeIndex = false; // <- cambia a true si quieres que METRICAS vea "Mis eventos"
+  const canSeeIndex = useMemo(() => {
+    if (role === "OPERADOR" || role === "ADMIN") return true;
+    if (role === "METRICAS") return metricsCanSeeIndex;
+    return false;
+  }, [role]);
 
   return (
     <Tabs
       screenOptions={{
         headerShown: true,
-
-        // ✅ WEB: oculta la barra inferior (para que los botones queden arriba en tus pantallas)
+        // ✅ WEB: oculta la barra inferior
         tabBarStyle: Platform.OS === "web" ? { display: "none" } : undefined,
       }}
     >
-      {/* Mis eventos: lo pueden ver todos */}
-      <Tabs.Screen name="index" options={{ title: "Mis eventos" }} />
+      {/* Mis eventos */}
+      <Tabs.Screen
+        name="index"
+        options={{
+          title: "Mis eventos",
+          href: canSeeIndex ? undefined : null,
+        }}
+      />
 
-      {/* Asistencia: solo OPERADOR */}
+      {/* Asistencia */}
       <Tabs.Screen
         name="attendance"
         options={{
           title: "Asistencia",
-          href: role === "OPERADOR" ? undefined : null,
+          href: canSeeAttendance ? undefined : null,
         }}
       />
 
-      {/* Scanner: 100% oculto (no cámara) */}
+      {/* Scanner: oculto */}
       <Tabs.Screen name="scanner" options={{ href: null }} />
 
-      {/* Admin: solo ADMIN */}
+      {/* Admin */}
       <Tabs.Screen
         name="admin"
         options={{
           title: "Admin",
-          href: role === "ADMIN" ? undefined : null,
+          href: canSeeAdmin ? undefined : null,
         }}
       />
-      <Tabs.Screen
-  name="metrics"
-  options={{
-    title: "Métricas",
-    href: role === "METRICAS" ? undefined : null,
-  }}
-/>
 
-      {/* Oculta explore */}
+      {/* Métricas */}
+      <Tabs.Screen
+        name="metrics"
+        options={{
+          title: "Métricas",
+          href: canSeeMetrics ? undefined : null,
+        }}
+      />
+
+      {/* Explore oculto */}
       <Tabs.Screen name="explore" options={{ href: null }} />
     </Tabs>
   );

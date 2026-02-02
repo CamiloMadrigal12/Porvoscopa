@@ -19,6 +19,24 @@ type EventRow = {
   end_time: string | null; // HH:mm:ss
 };
 
+type AttendanceRow = {
+  id: string;
+  event_id: string;
+  full_name: string | null;
+  document: string | null;
+  neighborhood: string | null;
+  phone: string | null;
+  invited_by: string | null;
+  scanned_at: string | null;
+  // 👇 viene del join
+  event?: {
+    id: string;
+    name: string;
+    event_date: string | null;
+    location: string | null;
+  } | null;
+};
+
 type AttendanceInsert = {
   event_id: string;
   full_name: string;
@@ -26,6 +44,8 @@ type AttendanceInsert = {
   neighborhood: string;
   phone: string | null;
   invited_by: string | null;
+  scanned_by: string; // ✅ para que no quede NULL
+  created_by: string; // ✅ para que no quede NULL
 };
 
 // ✅ Lista fija (sin tabla neighborhoods)
@@ -89,11 +109,9 @@ function endsAtDate(ev: EventRow): Date | null {
   const time = ev.end_time || ev.start_time;
   if (!time) return null;
 
-  // time puede venir "21:00:00" o "21:00"
   const hhmmss = time.length >= 5 ? time : "00:00:00";
   const t = hhmmss.length === 5 ? `${hhmmss}:00` : hhmmss;
 
-  // Date local: "YYYY-MM-DDTHH:mm:ss"
   const d = new Date(`${ev.event_date}T${t}`);
   if (Number.isNaN(d.getTime())) return null;
   return d;
@@ -101,20 +119,23 @@ function endsAtDate(ev: EventRow): Date | null {
 
 function isEventPast(ev: EventRow): boolean {
   const end = endsAtDate(ev);
-  if (!end) return false; // si no sabemos, no lo ocultamos
+  if (!end) return false;
   return end.getTime() < Date.now();
 }
 
 export default function AttendanceScreen() {
   const [loading, setLoading] = useState(false);
 
-  // ✅ puede haber varios eventos asignados
+  // ✅ eventos asignados al operador
   const [assignedEvents, setAssignedEvents] = useState<EventRow[]>([]);
   const [selectedEventId, setSelectedEventId] = useState<string>("");
 
   const selectedEvent = useMemo(() => {
     return assignedEvents.find((e) => e.id === selectedEventId) ?? null;
   }, [assignedEvents, selectedEventId]);
+
+  // ✅ lista de asistentes del evento seleccionado
+  const [attendees, setAttendees] = useState<AttendanceRow[]>([]);
 
   // Form asistentes
   const [fullName, setFullName] = useState("");
@@ -132,7 +153,10 @@ export default function AttendanceScreen() {
 
   const canSave = useMemo(() => {
     return (
-      fullName.trim() && document.trim() && neighborhood.trim() && !!selectedEventId
+      fullName.trim() &&
+      document.trim() &&
+      neighborhood.trim() &&
+      !!selectedEventId
     );
   }, [fullName, document, neighborhood, selectedEventId]);
 
@@ -152,7 +176,7 @@ export default function AttendanceScreen() {
         return;
       }
 
-      // 1) Traer ids asignados
+      // 1) ids asignados
       const staffRes = await supabase
         .from("event_staff")
         .select("event_id")
@@ -171,10 +195,11 @@ export default function AttendanceScreen() {
       if (ids.length === 0) {
         setAssignedEvents([]);
         setSelectedEventId("");
+        setAttendees([]);
         return;
       }
 
-      // 2) Traer eventos por ids
+      // 2) eventos por ids
       const evRes = await supabase
         .from("events")
         .select("id,name,location,event_date,start_time,end_time")
@@ -182,11 +207,11 @@ export default function AttendanceScreen() {
 
       if (evRes.error) throw evRes.error;
 
-      // ✅ 3) Filtrar: solo PENDIENTES (los pasados no se muestran)
+      // 3) filtrar pendientes
       let list = (evRes.data ?? []) as EventRow[];
       list = list.filter((ev) => !isEventPast(ev));
 
-      // ✅ 4) Orden: próximos primero (más práctico para el operador)
+      // 4) ordenar próximos primero
       list.sort((a, b) => {
         const ea = endsAtDate(a)?.getTime() ?? Number.MAX_SAFE_INTEGER;
         const eb = endsAtDate(b)?.getTime() ?? Number.MAX_SAFE_INTEGER;
@@ -195,20 +220,63 @@ export default function AttendanceScreen() {
 
       setAssignedEvents(list);
 
-      // Mantener selección si aún existe, si no seleccionar primero
+      // mantener selección si existe; si no, escoger el primero
       setSelectedEventId((prev) => {
         if (prev && list.some((x) => x.id === prev)) return prev;
         return list[0]?.id ?? "";
       });
 
-      // Si ya no hay pendientes, limpiar selección
-      if (list.length === 0) setSelectedEventId("");
+      if (list.length === 0) {
+        setSelectedEventId("");
+        setAttendees([]);
+      }
     } catch (err: any) {
       Alert.alert("Error", err?.message ?? "Error cargando eventos asignados");
       setAssignedEvents([]);
       setSelectedEventId("");
+      setAttendees([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadAttendeesForSelectedEvent = async (eventId: string) => {
+    if (!eventId) {
+      setAttendees([]);
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("attendance")
+        .select(
+          `
+          id,
+          event_id,
+          full_name,
+          document,
+          neighborhood,
+          phone,
+          invited_by,
+          scanned_at,
+          event:events (
+            id,
+            name,
+            event_date,
+            location
+          )
+        `
+        )
+        .eq("event_id", eventId)
+        .order("scanned_at", { ascending: false })
+        .returns<AttendanceRow[]>();
+
+      if (error) throw error;
+
+      setAttendees(data ?? []);
+    } catch (err: any) {
+      Alert.alert("Error", err?.message ?? "No se pudieron cargar asistentes");
+      setAttendees([]);
     }
   };
 
@@ -216,18 +284,31 @@ export default function AttendanceScreen() {
     loadAssignedEvents();
   }, []);
 
+  // ✅ cada vez que cambia el evento seleccionado, recarga asistentes
+  useEffect(() => {
+    loadAttendeesForSelectedEvent(selectedEventId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEventId]);
+
   const onSave = async () => {
     if (!selectedEventId) {
       Alert.alert("Sin evento", "Selecciona un evento.");
       return;
     }
     if (!canSave) {
-      Alert.alert("Faltan datos", "Nombre, documento y barrio/vereda son obligatorios.");
+      Alert.alert(
+        "Faltan datos",
+        "Nombre, documento y barrio/vereda son obligatorios."
+      );
       return;
     }
 
     setLoading(true);
     try {
+      const { data: authData } = await supabase.auth.getUser();
+      const uid = authData?.user?.id;
+      if (!uid) throw new Error("Sin sesión.");
+
       const payload: AttendanceInsert = {
         event_id: selectedEventId,
         full_name: fullName.trim(),
@@ -235,12 +316,20 @@ export default function AttendanceScreen() {
         neighborhood: neighborhood.trim(),
         phone: phone.trim() || null,
         invited_by: invitedBy.trim() || null,
+        scanned_by: uid,
+        created_by: uid,
       };
 
       const res = await supabase.from("attendance").insert(payload);
       if (res.error) throw res.error;
 
-      Alert.alert("Listo", "Asistente registrado.");
+      Alert.alert(
+        "Listo",
+        selectedEvent
+          ? `Asistente registrado en: ${selectedEvent.name}`
+          : "Asistente registrado."
+      );
+
       setFullName("");
       setDocument("");
       setNeighborhood("");
@@ -248,6 +337,8 @@ export default function AttendanceScreen() {
       setInvitedBy("");
       setShowBarrioList(false);
       setBarrioQuery("");
+
+      await loadAttendeesForSelectedEvent(selectedEventId);
     } catch (err: any) {
       Alert.alert("Error", err?.message ?? "No se pudo guardar");
     } finally {
@@ -298,7 +389,10 @@ export default function AttendanceScreen() {
                     return (
                       <Pressable
                         key={ev.id}
-                        style={[styles.dropItem, active && { backgroundColor: "#f3f4f6" }]}
+                        style={[
+                          styles.dropItem,
+                          active && { backgroundColor: "#f3f4f6" },
+                        ]}
                         onPress={() => {
                           setSelectedEventId(ev.id);
                           setShowEventList(false);
@@ -419,12 +513,58 @@ export default function AttendanceScreen() {
         </Pressable>
 
         <Pressable
-          style={[styles.btnDanger, { marginTop: 10 }, loading && { opacity: 0.7 }]}
+          style={[
+            styles.btnDanger,
+            { marginTop: 10 },
+            loading && { opacity: 0.7 },
+          ]}
           onPress={onSignOut}
           disabled={loading}
         >
           <Text style={styles.btnText}>Cerrar sesión</Text>
         </Pressable>
+      </View>
+
+      {/* Lista de asistentes del evento */}
+      <View style={styles.card}>
+        <Text style={styles.h2}>Asistentes del evento</Text>
+
+        {!selectedEventId ? (
+          <Text style={styles.small}>
+            Selecciona un evento para ver asistentes.
+          </Text>
+        ) : (
+          <>
+            <Text style={styles.small}>
+              Evento:{" "}
+              <Text style={{ fontWeight: "800" }}>
+                {selectedEvent?.name ?? "-"}
+              </Text>
+            </Text>
+            <Text style={styles.small}>Total: {attendees.length}</Text>
+
+            {attendees.length === 0 ? (
+              <Text style={styles.small}>(Aún no hay registros)</Text>
+            ) : (
+              attendees.map((a) => (
+                <View key={a.id} style={styles.attRow}>
+                  <Text style={styles.attTitle}>
+                    {a.full_name ?? "(sin nombre)"}{" "}
+                    {a.document ? `| ${a.document}` : ""}
+                  </Text>
+                  <Text style={styles.small}>
+                    {a.neighborhood ? `${a.neighborhood}` : ""}{" "}
+                    {a.invited_by ? `| Invita: ${a.invited_by}` : ""}
+                  </Text>
+                  <Text style={styles.small}>
+                    {a.event?.name ? `Evento: ${a.event.name}` : ""}
+                    {a.event?.event_date ? ` | ${a.event.event_date}` : ""}
+                  </Text>
+                </View>
+              ))
+            )}
+          </>
+        )}
       </View>
     </ScrollView>
   );
@@ -498,4 +638,11 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 12,
   },
+
+  attRow: {
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+  },
+  attTitle: { fontSize: 14, fontWeight: "800" },
 });
