@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
@@ -7,14 +7,61 @@ type EventRow = {
   id: string;
   name: string;
   location: string | null;
-  event_date: string | null;
-  start_time: string | null;
-  end_time: string | null;
+  event_date: string | null; // YYYY-MM-DD
+  start_time: string | null; // HH:mm:ss
+  end_time: string | null;   // HH:mm:ss
 };
+
+const COLOMBIA_UTC_OFFSET_MIN = -5 * 60; // UTC-5
+
+function toUTCDateFromColombia(dateYYYYMMDD: string, timeHHMMSS: string): Date | null {
+  // Construimos un "UTC timestamp" equivalente a (fecha/hora en Colombia)
+  // Colombia = UTC-5 => UTC = Colombia + 5 horas
+  const [y, m, d] = dateYYYYMMDD.split("-").map(Number);
+  const [hh, mm, ss] = timeHHMMSS.split(":").map((x) => Number(x ?? 0));
+
+  if (![y, m, d, hh, mm].every((n) => Number.isFinite(n))) return null;
+
+  // Esto crea un Date en UTC a partir de componentes UTC
+  // Primero creamos la hora "local Colombia" como si fuera UTC y luego ajustamos +5h
+  const baseUTC = Date.UTC(y, m - 1, d, hh, mm, Number.isFinite(ss) ? ss : 0);
+
+  // Colombia -5 => para pasar a UTC sumamos 5 horas (300 min)
+  const utcMs = baseUTC - COLOMBIA_UTC_OFFSET_MIN * 60 * 1000;
+
+  const dt = new Date(utcMs);
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt;
+}
+
+function endsAtUTC(ev: EventRow): Date | null {
+  if (!ev.event_date) return null;
+  const time = ev.end_time || ev.start_time;
+  if (!time) return null;
+
+  const t = time.length === 5 ? `${time}:00` : time; // HH:mm -> HH:mm:00
+  return toUTCDateFromColombia(ev.event_date, t);
+}
+
+function isEventPast(ev: EventRow): boolean {
+  const endUTC = endsAtUTC(ev);
+  if (!endUTC) return false;
+  return endUTC.getTime() < Date.now();
+}
+
+function fmtEventLine(ev: EventRow) {
+  const date = ev.event_date ?? "";
+  const st = ev.start_time ? ` | ${String(ev.start_time).slice(0, 5)}` : "";
+  const et = ev.end_time ? ` - ${String(ev.end_time).slice(0, 5)}` : "";
+  const loc = ev.location ? ` | ${ev.location}` : "";
+  return `${date}${st}${et}${loc}`.trim();
+}
 
 export default function MyEvents() {
   const [loading, setLoading] = useState(true);
   const [events, setEvents] = useState<EventRow[]>([]);
+
+  const hasEvents = useMemo(() => !loading && events.length > 0, [loading, events]);
 
   const load = async () => {
     setLoading(true);
@@ -51,11 +98,15 @@ export default function MyEvents() {
 
       if (evRes.error) throw evRes.error;
 
-      const list = (evRes.data ?? []) as EventRow[];
+      // ✅ 3) filtrar: solo pendientes (hora Colombia)
+      let list = (evRes.data ?? []) as EventRow[];
+      list = list.filter((ev) => !isEventPast(ev));
+
+      // ✅ 4) ordenar: próximos primero (hora Colombia)
       list.sort((a, b) => {
-        const ka = `${a.event_date ?? ""} ${a.start_time ?? ""}`.trim();
-        const kb = `${b.event_date ?? ""} ${b.start_time ?? ""}`.trim();
-        return kb.localeCompare(ka);
+        const ea = endsAtUTC(a)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        const eb = endsAtUTC(b)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        return ea - eb;
       });
 
       setEvents(list);
@@ -82,18 +133,15 @@ export default function MyEvents() {
       <Text style={styles.small}>{loading ? "Cargando..." : "Sesión activa."}</Text>
 
       <View style={styles.list}>
-        {loading ? null : events.length === 0 ? (
-          <Text style={styles.empty}>No tienes eventos asignados todavía.</Text>
+        {loading ? null : !hasEvents ? (
+          <Text style={styles.empty}>
+            No tienes eventos pendientes asignados (o ya terminaron).
+          </Text>
         ) : (
           events.map((ev) => (
             <View key={ev.id} style={styles.card}>
               <Text style={styles.title}>{ev.name}</Text>
-              <Text style={styles.small}>
-                {ev.event_date ?? ""}
-                {ev.start_time ? ` | ${String(ev.start_time).slice(0, 5)}` : ""}
-                {ev.end_time ? ` - ${String(ev.end_time).slice(0, 5)}` : ""}
-                {ev.location ? ` | ${ev.location}` : ""}
-              </Text>
+              <Text style={styles.small}>{fmtEventLine(ev)}</Text>
 
               <Pressable
                 style={[styles.btn, { marginTop: 10 }]}
@@ -106,11 +154,19 @@ export default function MyEvents() {
         )}
       </View>
 
-      <Pressable style={[styles.btn, { backgroundColor: "#111827" }]} onPress={load}>
-        <Text style={styles.btnText}>Actualizar</Text>
+      <Pressable
+        style={[styles.btn, { backgroundColor: "#111827" }]}
+        onPress={load}
+        disabled={loading}
+      >
+        <Text style={styles.btnText}>{loading ? "Actualizando..." : "Actualizar"}</Text>
       </Pressable>
 
-      <Pressable style={[styles.btn, { backgroundColor: "#374151", marginTop: 10 }]} onPress={onSignOut}>
+      <Pressable
+        style={[styles.btn, { backgroundColor: "#374151", marginTop: 10 }]}
+        onPress={onSignOut}
+        disabled={loading}
+      >
         <Text style={styles.btnText}>Cerrar sesión</Text>
       </Pressable>
     </View>
