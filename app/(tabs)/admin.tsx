@@ -31,17 +31,18 @@ type EventRow = {
 };
 
 function toYYYYMMDD(d: Date) {
-  // ✅ evita desfases por zona horaria
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+
 function toHHMM(d: Date) {
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${hh}:${mm}`;
 }
+
 function mergeDateAndTime(baseDate: Date, time: Date) {
   const d = new Date(baseDate);
   d.setHours(time.getHours(), time.getMinutes(), 0, 0);
@@ -56,9 +57,9 @@ export default function AdminScreen() {
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
 
-  // ✅ ahora Date/Time reales
+  // ✅ Fecha por defecto hoy, horas SIN seleccionar (null)
   const [eventDate, setEventDate] = useState<Date>(new Date());
-  const [startTime, setStartTime] = useState<Date>(new Date());
+  const [startTime, setStartTime] = useState<Date | null>(null);
   const [endTime, setEndTime] = useState<Date | null>(null);
 
   // Pickers (móvil)
@@ -96,12 +97,17 @@ export default function AdminScreen() {
 
     setMe((profile as Profile) ?? null);
 
-    // ✅ Si tu tabla profiles NO tiene created_at, este order va a fallar.
-    // Si te falla, quita el .order(...)
     const { data: ops, error: oErr } = await supabase
       .from("profiles")
       .select("id,email,full_name,role")
-      .in("role", ["OPERADOR", "OPERARIO", "operador", "operario", "Operador", "Operario"]);
+      .in("role", [
+        "OPERADOR",
+        "OPERARIO",
+        "operador",
+        "operario",
+        "Operador",
+        "Operario",
+      ]);
 
     if (oErr) {
       Alert.alert("Error cargando operadores", oErr.message);
@@ -145,11 +151,17 @@ export default function AdminScreen() {
     const n = name.trim();
     if (!n) return Alert.alert("Faltan datos", "Nombre del evento");
 
+    // ✅ Hora inicio obligatoria
+    if (!startTime) return Alert.alert("Faltan datos", "Hora de inicio");
+
     // ✅ valida que end > start (si existe end)
     const fullStart = mergeDateAndTime(eventDate, startTime);
     const fullEnd = endTime ? mergeDateAndTime(eventDate, endTime) : null;
     if (fullEnd && fullEnd <= fullStart) {
-      return Alert.alert("Hora inválida", "La hora de fin debe ser mayor a la hora de inicio.");
+      return Alert.alert(
+        "Hora inválida",
+        "La hora de fin debe ser mayor a la hora de inicio."
+      );
     }
 
     setLoading(true);
@@ -190,7 +202,9 @@ export default function AdminScreen() {
 
       Alert.alert(
         "Listo",
-        selectedOperatorId ? "Evento creado y asignado." : "Evento creado (sin operador asignado)."
+        selectedOperatorId
+          ? "Evento creado y asignado."
+          : "Evento creado (sin operador asignado)."
       );
 
       await loadMyEvents();
@@ -199,6 +213,7 @@ export default function AdminScreen() {
       setName("");
       setLocation("");
       setSelectedOperatorId("");
+      setStartTime(null);
       setEndTime(null);
     } catch (err: any) {
       Alert.alert("Error", err?.message ?? "Error desconocido");
@@ -212,36 +227,44 @@ export default function AdminScreen() {
     router.replace("/login");
   };
 
-  // ✅ Web: inputs date/time
+  // ✅ Web: calendario y reloj (inputs nativos)
   const WebDateInput = (
-    <TextInput
-      style={styles.input}
-      value={toYYYYMMDD(eventDate)}
-      onChangeText={(v) => {
-        const [y, m, d] = v.split("-").map(Number);
-        if (!y || !m || !d) return;
-        setEventDate(new Date(y, m - 1, d));
-      }}
-      placeholder="YYYY-MM-DD"
-      autoCapitalize="none"
-    />
+    <View style={styles.webField}>
+      <input
+        type="date"
+        value={toYYYYMMDD(eventDate)}
+        onChange={(e) => {
+          const v = e.target.value; // YYYY-MM-DD
+          if (!v) return;
+          const [y, m, d] = v.split("-").map(Number);
+          if (!y || !m || !d) return;
+          setEventDate(new Date(y, m - 1, d));
+        }}
+        style={styles.webInput as any}
+      />
+    </View>
   );
 
-  const WebTimeInput = (value: Date | null, onChange: (d: Date | null) => void, placeholder: string) => (
-    <TextInput
-      style={[styles.input, styles.inputHalf]}
-      value={value ? toHHMM(value) : ""}
-      onChangeText={(v) => {
-        if (!v) return onChange(null);
-        const [hh, mm] = v.split(":").map(Number);
-        if (Number.isNaN(hh) || Number.isNaN(mm)) return;
-        const t = new Date();
-        t.setHours(hh, mm, 0, 0);
-        onChange(t);
-      }}
-      placeholder={placeholder}
-      autoCapitalize="none"
-    />
+  const WebTimeInput = (
+    value: Date | null,
+    onChange: (d: Date | null) => void
+  ) => (
+    <View style={styles.webFieldHalf}>
+      <input
+        type="time"
+        value={value ? toHHMM(value) : ""}
+        onChange={(e) => {
+          const v = e.target.value; // HH:MM
+          if (!v) return onChange(null);
+          const [hh, mm] = v.split(":").map(Number);
+          if (Number.isNaN(hh) || Number.isNaN(mm)) return;
+          const t = new Date();
+          t.setHours(hh, mm, 0, 0);
+          onChange(t);
+        }}
+        style={styles.webInput as any}
+      />
+    </View>
   );
 
   return (
@@ -253,7 +276,9 @@ export default function AdminScreen() {
 
       {!isAdmin ? (
         <View style={styles.card}>
-          <Text style={styles.warn}>No eres ADMIN. Esta pantalla es solo para admin.</Text>
+          <Text style={styles.warn}>
+            No eres ADMIN. Esta pantalla es solo para admin.
+          </Text>
           <Pressable style={styles.btn} onPress={onSignOut}>
             <Text style={styles.btnText}>Cerrar sesión</Text>
           </Pressable>
@@ -284,7 +309,10 @@ export default function AdminScreen() {
               WebDateInput
             ) : (
               <>
-                <Pressable style={styles.input} onPress={() => setShowDatePicker(true)}>
+                <Pressable
+                  style={styles.input}
+                  onPress={() => setShowDatePicker(true)}
+                >
                   <Text>{toYYYYMMDD(eventDate)}</Text>
                 </Pressable>
 
@@ -306,16 +334,19 @@ export default function AdminScreen() {
                 <Text style={styles.label}>Hora de inicio</Text>
 
                 {Platform.OS === "web" ? (
-                  WebTimeInput(startTime, (d) => d && setStartTime(d), "HH:MM (ej: 08:00)")
+                  WebTimeInput(startTime, setStartTime)
                 ) : (
                   <>
-                    <Pressable style={[styles.input, styles.inputHalf]} onPress={() => setShowStartPicker(true)}>
-                      <Text>{toHHMM(startTime)}</Text>
+                    <Pressable
+                      style={[styles.input, styles.inputHalf]}
+                      onPress={() => setShowStartPicker(true)}
+                    >
+                      <Text>{startTime ? toHHMM(startTime) : "Seleccionar"}</Text>
                     </Pressable>
 
                     {showStartPicker && (
                       <DateTimePicker
-                        value={startTime}
+                        value={startTime ?? new Date()}
                         mode="time"
                         is24Hour
                         onChange={(_, selected) => {
@@ -332,10 +363,13 @@ export default function AdminScreen() {
                 <Text style={styles.label}>Hora de fin (opcional)</Text>
 
                 {Platform.OS === "web" ? (
-                  WebTimeInput(endTime, setEndTime, "HH:MM (ej: 12:00)")
+                  WebTimeInput(endTime, setEndTime)
                 ) : (
                   <>
-                    <Pressable style={[styles.input, styles.inputHalf]} onPress={() => setShowEndPicker(true)}>
+                    <Pressable
+                      style={[styles.input, styles.inputHalf]}
+                      onPress={() => setShowEndPicker(true)}
+                    >
                       <Text>{endTime ? toHHMM(endTime) : "Seleccionar"}</Text>
                     </Pressable>
 
@@ -355,15 +389,24 @@ export default function AdminScreen() {
               </View>
             </View>
 
-            <Text style={[styles.label, { marginTop: 6 }]}>Asignar a operador (opcional)</Text>
-            <Text style={styles.small}>Operadores encontrados: {operators.length}</Text>
+            <Text style={[styles.label, { marginTop: 6 }]}>
+              Asignar a operador (opcional)
+            </Text>
+            <Text style={styles.small}>
+              Operadores encontrados: {operators.length}
+            </Text>
 
             <View style={styles.pills}>
               <Pressable
                 onPress={() => setSelectedOperatorId("")}
                 style={[styles.pill, !selectedOperatorId && styles.pillActive]}
               >
-                <Text style={[styles.pillText, !selectedOperatorId && styles.pillTextActive]}>
+                <Text
+                  style={[
+                    styles.pillText,
+                    !selectedOperatorId && styles.pillTextActive,
+                  ]}
+                >
                   Sin operador
                 </Text>
               </Pressable>
@@ -376,7 +419,12 @@ export default function AdminScreen() {
                     onPress={() => setSelectedOperatorId(op.id)}
                     style={[styles.pill, active && styles.pillActive]}
                   >
-                    <Text style={[styles.pillText, active && styles.pillTextActive]}>
+                    <Text
+                      style={[
+                        styles.pillText,
+                        active && styles.pillTextActive,
+                      ]}
+                    >
                       {(op.full_name || op.email || "Operario").toString()}
                     </Text>
                   </Pressable>
@@ -384,8 +432,14 @@ export default function AdminScreen() {
               })}
             </View>
 
-            <Pressable style={[styles.btn, loading && { opacity: 0.7 }]} onPress={onCreateEvent} disabled={loading}>
-              <Text style={styles.btnText}>{loading ? "Creando..." : "Crear y asignar"}</Text>
+            <Pressable
+              style={[styles.btn, loading && { opacity: 0.7 }]}
+              onPress={onCreateEvent}
+              disabled={loading}
+            >
+              <Text style={styles.btnText}>
+                {loading ? "Creando..." : "Crear y asignar"}
+              </Text>
             </Pressable>
           </View>
 
@@ -409,7 +463,10 @@ export default function AdminScreen() {
             )}
           </View>
 
-          <Pressable style={[styles.btn, { backgroundColor: "#374151" }]} onPress={onSignOut}>
+          <Pressable
+            style={[styles.btn, { backgroundColor: "#374151" }]}
+            onPress={onSignOut}
+          >
             <Text style={styles.btnText}>Cerrar sesión</Text>
           </Pressable>
         </>
@@ -423,7 +480,12 @@ const styles = StyleSheet.create({
   h1: { fontSize: 22, fontWeight: "800", marginBottom: 6 },
   h2: { fontSize: 16, fontWeight: "800", marginBottom: 10 },
   small: { fontSize: 12, opacity: 0.8 },
-  warn: { fontSize: 14, fontWeight: "700", marginBottom: 12, color: "#b45309" },
+  warn: {
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 12,
+    color: "#b45309",
+  },
   card: {
     borderWidth: 1,
     borderColor: "#e5e7eb",
@@ -432,17 +494,57 @@ const styles = StyleSheet.create({
     marginTop: 14,
     backgroundColor: "white",
   },
-  input: { borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, padding: 12, marginBottom: 10 },
+  input: {
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+  },
   row: { flexDirection: "row", gap: 10 },
   inputHalf: { flex: 1 },
   label: { fontSize: 12, fontWeight: "700", marginBottom: 6 },
-  pills: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10, marginTop: 8 },
-  pill: { borderWidth: 1, borderColor: "#d1d5db", paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999 },
+  pills: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+    marginTop: 8,
+  },
+  pill: {
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+  },
   pillActive: { backgroundColor: "#111827", borderColor: "#111827" },
   pillText: { fontSize: 12 },
   pillTextActive: { color: "white", fontWeight: "700" },
-  btn: { backgroundColor: "#111827", padding: 14, borderRadius: 10, alignItems: "center", marginTop: 6 },
+  btn: {
+    backgroundColor: "#111827",
+    padding: 14,
+    borderRadius: 10,
+    alignItems: "center",
+    marginTop: 6,
+  },
   btnText: { color: "white", fontWeight: "800" },
-  eventRow: { paddingVertical: 10, borderTopWidth: 1, borderTopColor: "#f3f4f6" },
+  eventRow: {
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+  },
   eventTitle: { fontSize: 14, fontWeight: "800" },
+
+  // ✅ estilos para inputs nativos web
+  webField: { marginBottom: 10 },
+  webFieldHalf: { flex: 1, marginBottom: 10 },
+  webInput: {
+    width: "100%",
+    border: "1px solid #d1d5db",
+    borderRadius: "10px",
+    padding: "12px",
+    fontSize: "16px",
+    boxSizing: "border-box",
+  } as any,
 });
