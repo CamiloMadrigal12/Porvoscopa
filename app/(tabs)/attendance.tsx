@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
 type EventRow = {
   id: string;
   name: string;
   location: string | null;
-  event_date: string | null;
-  start_time: string | null;
-  end_time: string | null;
+  event_date: string | null; // YYYY-MM-DD
+  start_time: string | null; // HH:mm:ss
+  end_time: string | null; // HH:mm:ss
 };
 
 type AttendanceInsert = {
@@ -18,7 +26,6 @@ type AttendanceInsert = {
   neighborhood: string;
   phone: string | null;
   invited_by: string | null;
-  // created_by?: string | null; // ⚠️ solo si tu tabla lo tiene; si te da 400, déjalo comentado
 };
 
 // ✅ Lista fija (sin tabla neighborhoods)
@@ -72,6 +79,32 @@ function fmtEventLine(ev: EventRow) {
   return `${date} ${st} ${et} ${loc}`.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Convierte (event_date + end_time) a Date local.
+ * - Si no hay end_time, usa start_time.
+ * - Si no hay ninguna hora, retorna null (no filtramos).
+ */
+function endsAtDate(ev: EventRow): Date | null {
+  if (!ev.event_date) return null;
+  const time = ev.end_time || ev.start_time;
+  if (!time) return null;
+
+  // time puede venir "21:00:00" o "21:00"
+  const hhmmss = time.length >= 5 ? time : "00:00:00";
+  const t = hhmmss.length === 5 ? `${hhmmss}:00` : hhmmss;
+
+  // Date local: "YYYY-MM-DDTHH:mm:ss"
+  const d = new Date(`${ev.event_date}T${t}`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+function isEventPast(ev: EventRow): boolean {
+  const end = endsAtDate(ev);
+  if (!end) return false; // si no sabemos, no lo ocultamos
+  return end.getTime() < Date.now();
+}
+
 export default function AttendanceScreen() {
   const [loading, setLoading] = useState(false);
 
@@ -98,7 +131,9 @@ export default function AttendanceScreen() {
   const [showEventList, setShowEventList] = useState(false);
 
   const canSave = useMemo(() => {
-    return fullName.trim() && document.trim() && neighborhood.trim() && !!selectedEventId;
+    return (
+      fullName.trim() && document.trim() && neighborhood.trim() && !!selectedEventId
+    );
   }, [fullName, document, neighborhood, selectedEventId]);
 
   const barriosFiltrados = useMemo(() => {
@@ -117,7 +152,7 @@ export default function AttendanceScreen() {
         return;
       }
 
-      // 1) Traer ids asignados (NO ORDER por columnas que no existen)
+      // 1) Traer ids asignados
       const staffRes = await supabase
         .from("event_staff")
         .select("event_id")
@@ -126,7 +161,11 @@ export default function AttendanceScreen() {
       if (staffRes.error) throw staffRes.error;
 
       const ids = Array.from(
-        new Set((staffRes.data ?? []).map((r: any) => String(r.event_id)).filter(Boolean))
+        new Set(
+          (staffRes.data ?? [])
+            .map((r: any) => String(r.event_id))
+            .filter(Boolean)
+        )
       );
 
       if (ids.length === 0) {
@@ -143,13 +182,15 @@ export default function AttendanceScreen() {
 
       if (evRes.error) throw evRes.error;
 
-      const list = (evRes.data ?? []) as EventRow[];
+      // ✅ 3) Filtrar: solo PENDIENTES (los pasados no se muestran)
+      let list = (evRes.data ?? []) as EventRow[];
+      list = list.filter((ev) => !isEventPast(ev));
 
-      // Orden simple por fecha/hora (en frontend)
+      // ✅ 4) Orden: próximos primero (más práctico para el operador)
       list.sort((a, b) => {
-        const ka = `${a.event_date ?? ""} ${a.start_time ?? ""}`.trim();
-        const kb = `${b.event_date ?? ""} ${b.start_time ?? ""}`.trim();
-        return kb.localeCompare(ka);
+        const ea = endsAtDate(a)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        const eb = endsAtDate(b)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+        return ea - eb;
       });
 
       setAssignedEvents(list);
@@ -159,6 +200,9 @@ export default function AttendanceScreen() {
         if (prev && list.some((x) => x.id === prev)) return prev;
         return list[0]?.id ?? "";
       });
+
+      // Si ya no hay pendientes, limpiar selección
+      if (list.length === 0) setSelectedEventId("");
     } catch (err: any) {
       Alert.alert("Error", err?.message ?? "Error cargando eventos asignados");
       setAssignedEvents([]);
@@ -213,10 +257,6 @@ export default function AttendanceScreen() {
 
   const onSignOut = async () => {
     await supabase.auth.signOut();
-    // si tienes /login en app/login.tsx
-    // (si tu login está en app/login.tsx, esto está perfecto)
-    // si está en app/(auth)/login.tsx, ajusta la ruta
-    // pero por tus capturas es /login
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { router } = require("expo-router");
     router.replace("/login");
@@ -231,7 +271,9 @@ export default function AttendanceScreen() {
         <Text style={styles.h2}>Evento asignado</Text>
 
         {assignedEvents.length === 0 ? (
-          <Text style={styles.small}>No tienes eventos asignados todavía.</Text>
+          <Text style={styles.small}>
+            No tienes eventos pendientes asignados (o ya terminaron).
+          </Text>
         ) : (
           <>
             <Text style={styles.label}>Selecciona evento</Text>
@@ -243,7 +285,9 @@ export default function AttendanceScreen() {
               <Text style={{ opacity: selectedEvent ? 1 : 0.5 }}>
                 {selectedEvent ? selectedEvent.name : "Selecciona un evento"}
               </Text>
-              {selectedEvent ? <Text style={styles.small}>{fmtEventLine(selectedEvent)}</Text> : null}
+              {selectedEvent ? (
+                <Text style={styles.small}>{fmtEventLine(selectedEvent)}</Text>
+              ) : null}
             </Pressable>
 
             {showEventList && (
@@ -271,8 +315,14 @@ export default function AttendanceScreen() {
           </>
         )}
 
-        <Pressable style={[styles.btnGray, loading && { opacity: 0.7 }]} onPress={loadAssignedEvents} disabled={loading}>
-          <Text style={styles.btnText}>Actualizar eventos asignados</Text>
+        <Pressable
+          style={[styles.btnGray, loading && { opacity: 0.7 }]}
+          onPress={loadAssignedEvents}
+          disabled={loading}
+        >
+          <Text style={styles.btnText}>
+            {loading ? "Actualizando..." : "Actualizar eventos asignados"}
+          </Text>
         </Pressable>
       </View>
 
@@ -281,7 +331,12 @@ export default function AttendanceScreen() {
         <Text style={styles.h2}>Registrar asistente</Text>
 
         <Text style={styles.label}>Nombre</Text>
-        <TextInput style={styles.input} value={fullName} onChangeText={setFullName} placeholder="Nombre completo" />
+        <TextInput
+          style={styles.input}
+          value={fullName}
+          onChangeText={setFullName}
+          placeholder="Nombre completo"
+        />
 
         <Text style={styles.label}>Documento</Text>
         <TextInput
@@ -346,14 +401,21 @@ export default function AttendanceScreen() {
         />
 
         <Text style={styles.label}>Quién lo invita</Text>
-        <TextInput style={styles.input} value={invitedBy} onChangeText={setInvitedBy} placeholder="Opcional" />
+        <TextInput
+          style={styles.input}
+          value={invitedBy}
+          onChangeText={setInvitedBy}
+          placeholder="Opcional"
+        />
 
         <Pressable
           style={[styles.btn, (!canSave || loading) && { opacity: 0.6 }]}
           onPress={onSave}
           disabled={!canSave || loading}
         >
-          <Text style={styles.btnText}>{loading ? "Guardando..." : "Guardar asistente"}</Text>
+          <Text style={styles.btnText}>
+            {loading ? "Guardando..." : "Guardar asistente"}
+          </Text>
         </Pressable>
 
         <Pressable
