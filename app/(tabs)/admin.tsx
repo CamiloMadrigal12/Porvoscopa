@@ -1,8 +1,17 @@
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { supabase } from "../../src/lib/supabase";
-
 
 type Profile = {
   id: string;
@@ -15,24 +24,47 @@ type EventRow = {
   id: string;
   name: string;
   location: string | null;
-  event_date: string; // YYYY-MM-DD
+  event_date: string | null; // YYYY-MM-DD
   start_time: string | null; // HH:MM:SS
   end_time: string | null;
   created_at: string;
 };
 
+function toYYYYMMDD(d: Date) {
+  // ✅ evita desfases por zona horaria
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function toHHMM(d: Date) {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+function mergeDateAndTime(baseDate: Date, time: Date) {
+  const d = new Date(baseDate);
+  d.setHours(time.getHours(), time.getMinutes(), 0, 0);
+  return d;
+}
+
 export default function AdminScreen() {
   const [me, setMe] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Form (vacío)
+  // Form
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
 
-  // ✅ Por ahora texto (WEB): luego se cambia a picker en móvil
-  const [eventDate, setEventDate] = useState(""); // YYYY-MM-DD
-  const [startTime, setStartTime] = useState(""); // HH:MM
-  const [endTime, setEndTime] = useState(""); // HH:MM (opcional)
+  // ✅ ahora Date/Time reales
+  const [eventDate, setEventDate] = useState<Date>(new Date());
+  const [startTime, setStartTime] = useState<Date>(new Date());
+  const [endTime, setEndTime] = useState<Date | null>(null);
+
+  // Pickers (móvil)
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showStartPicker, setShowStartPicker] = useState(false);
+  const [showEndPicker, setShowEndPicker] = useState(false);
 
   // Operadores
   const [operators, setOperators] = useState<Profile[]>([]);
@@ -64,12 +96,12 @@ export default function AdminScreen() {
 
     setMe((profile as Profile) ?? null);
 
-    // ✅ Cargar operadores con tolerancia (OPERADOR/OPERARIO + may/min)
+    // ✅ Si tu tabla profiles NO tiene created_at, este order va a fallar.
+    // Si te falla, quita el .order(...)
     const { data: ops, error: oErr } = await supabase
       .from("profiles")
       .select("id,email,full_name,role")
-      .in("role", ["OPERADOR", "OPERARIO", "operador", "operario", "Operador", "Operario"])
-      .order("created_at", { ascending: true });
+      .in("role", ["OPERADOR", "OPERARIO", "operador", "operario", "Operador", "Operario"]);
 
     if (oErr) {
       Alert.alert("Error cargando operadores", oErr.message);
@@ -89,7 +121,7 @@ export default function AdminScreen() {
       .select("id,name,location,event_date,start_time,end_time,created_at")
       .eq("created_by", uid)
       .order("created_at", { ascending: false })
-      .limit(20);
+      .limit(50);
 
     if (error) {
       Alert.alert("Error cargando eventos", error.message);
@@ -113,22 +145,11 @@ export default function AdminScreen() {
     const n = name.trim();
     if (!n) return Alert.alert("Faltan datos", "Nombre del evento");
 
-    // ✅ Para que puedas crear YA:
-    // - fecha/hora opcionales por ahora (web)
-    // Si quieres exigirlos luego, se vuelve a poner la validación.
-    const d = eventDate.trim();
-    const st = startTime.trim();
-    const et = endTime.trim();
-
-    // Si el usuario escribe algo, validamos formato
-    if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
-      return Alert.alert("Fecha inválida", "Usa formato YYYY-MM-DD (ej: 2026-01-23)");
-    }
-    if (st && !/^\d{2}:\d{2}$/.test(st)) {
-      return Alert.alert("Hora inicio inválida", "Usa HH:MM (ej: 08:00)");
-    }
-    if (et && !/^\d{2}:\d{2}$/.test(et)) {
-      return Alert.alert("Hora fin inválida", "Usa HH:MM (ej: 12:00)");
+    // ✅ valida que end > start (si existe end)
+    const fullStart = mergeDateAndTime(eventDate, startTime);
+    const fullEnd = endTime ? mergeDateAndTime(eventDate, endTime) : null;
+    if (fullEnd && fullEnd <= fullStart) {
+      return Alert.alert("Hora inválida", "La hora de fin debe ser mayor a la hora de inicio.");
     }
 
     setLoading(true);
@@ -137,15 +158,19 @@ export default function AdminScreen() {
       const uid = authData?.user?.id;
       if (!uid) throw new Error("Sin sesión.");
 
+      const d = toYYYYMMDD(eventDate);
+      const st = `${toHHMM(startTime)}:00`;
+      const et = endTime ? `${toHHMM(endTime)}:00` : null;
+
       // 1) Crear evento
       const { data: created, error: cErr } = await supabase
         .from("events")
         .insert({
           name: n,
           location: location.trim() || null,
-          event_date: d || null, // 👈 si tu columna NO acepta null, cambia por "" y ajustamos BD
-          start_time: st ? `${st}:00` : null,
-          end_time: et ? `${et}:00` : null,
+          event_date: d,
+          start_time: st,
+          end_time: et,
           created_by: uid,
         })
         .select("id,name")
@@ -173,10 +198,8 @@ export default function AdminScreen() {
       // Limpiar
       setName("");
       setLocation("");
-      setEventDate("");
-      setStartTime("");
-      setEndTime("");
       setSelectedOperatorId("");
+      setEndTime(null);
     } catch (err: any) {
       Alert.alert("Error", err?.message ?? "Error desconocido");
     } finally {
@@ -188,6 +211,38 @@ export default function AdminScreen() {
     await supabase.auth.signOut();
     router.replace("/login");
   };
+
+  // ✅ Web: inputs date/time
+  const WebDateInput = (
+    <TextInput
+      style={styles.input}
+      value={toYYYYMMDD(eventDate)}
+      onChangeText={(v) => {
+        const [y, m, d] = v.split("-").map(Number);
+        if (!y || !m || !d) return;
+        setEventDate(new Date(y, m - 1, d));
+      }}
+      placeholder="YYYY-MM-DD"
+      autoCapitalize="none"
+    />
+  );
+
+  const WebTimeInput = (value: Date | null, onChange: (d: Date | null) => void, placeholder: string) => (
+    <TextInput
+      style={[styles.input, styles.inputHalf]}
+      value={value ? toHHMM(value) : ""}
+      onChangeText={(v) => {
+        if (!v) return onChange(null);
+        const [hh, mm] = v.split(":").map(Number);
+        if (Number.isNaN(hh) || Number.isNaN(mm)) return;
+        const t = new Date();
+        t.setHours(hh, mm, 0, 0);
+        onChange(t);
+      }}
+      placeholder={placeholder}
+      autoCapitalize="none"
+    />
+  );
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -224,75 +279,109 @@ export default function AdminScreen() {
               placeholder="Ej: Sede PorVos"
             />
 
-            {/* ✅ WEB temporal: texto */}
-            <Text style={styles.label}>Fecha (por ahora escrita)</Text>
-            <TextInput
-              style={styles.input}
-              value={eventDate}
-              onChangeText={setEventDate}
-              placeholder="YYYY-MM-DD (ej: 2026-01-23)"
-              autoCapitalize="none"
-            />
+            <Text style={styles.label}>Fecha</Text>
+            {Platform.OS === "web" ? (
+              WebDateInput
+            ) : (
+              <>
+                <Pressable style={styles.input} onPress={() => setShowDatePicker(true)}>
+                  <Text>{toYYYYMMDD(eventDate)}</Text>
+                </Pressable>
+
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={eventDate}
+                    mode="date"
+                    onChange={(_, selected) => {
+                      setShowDatePicker(false);
+                      if (selected) setEventDate(selected);
+                    }}
+                  />
+                )}
+              </>
+            )}
 
             <View style={styles.row}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.label}>Hora de inicio (por ahora escrita)</Text>
-                <TextInput
-                  style={[styles.input, styles.inputHalf]}
-                  value={startTime}
-                  onChangeText={setStartTime}
-                  placeholder="HH:MM (ej: 08:00)"
-                  autoCapitalize="none"
-                />
+                <Text style={styles.label}>Hora de inicio</Text>
+
+                {Platform.OS === "web" ? (
+                  WebTimeInput(startTime, (d) => d && setStartTime(d), "HH:MM (ej: 08:00)")
+                ) : (
+                  <>
+                    <Pressable style={[styles.input, styles.inputHalf]} onPress={() => setShowStartPicker(true)}>
+                      <Text>{toHHMM(startTime)}</Text>
+                    </Pressable>
+
+                    {showStartPicker && (
+                      <DateTimePicker
+                        value={startTime}
+                        mode="time"
+                        is24Hour
+                        onChange={(_, selected) => {
+                          setShowStartPicker(false);
+                          if (selected) setStartTime(selected);
+                        }}
+                      />
+                    )}
+                  </>
+                )}
               </View>
 
               <View style={{ flex: 1 }}>
                 <Text style={styles.label}>Hora de fin (opcional)</Text>
-                <TextInput
-                  style={[styles.input, styles.inputHalf]}
-                  value={endTime}
-                  onChangeText={setEndTime}
-                  placeholder="HH:MM (ej: 12:00)"
-                  autoCapitalize="none"
-                />
+
+                {Platform.OS === "web" ? (
+                  WebTimeInput(endTime, setEndTime, "HH:MM (ej: 12:00)")
+                ) : (
+                  <>
+                    <Pressable style={[styles.input, styles.inputHalf]} onPress={() => setShowEndPicker(true)}>
+                      <Text>{endTime ? toHHMM(endTime) : "Seleccionar"}</Text>
+                    </Pressable>
+
+                    {showEndPicker && (
+                      <DateTimePicker
+                        value={endTime ?? new Date()}
+                        mode="time"
+                        is24Hour
+                        onChange={(_, selected) => {
+                          setShowEndPicker(false);
+                          if (selected) setEndTime(selected);
+                        }}
+                      />
+                    )}
+                  </>
+                )}
               </View>
             </View>
 
             <Text style={[styles.label, { marginTop: 6 }]}>Asignar a operador (opcional)</Text>
-
-            {/* ✅ Debug para que veas si realmente están llegando */}
             <Text style={styles.small}>Operadores encontrados: {operators.length}</Text>
 
             <View style={styles.pills}>
-              {operators.length === 0 ? (
-                <Text style={styles.small}>No hay OPERADORES/OPERARIOS en profiles (según query).</Text>
-              ) : (
-                <>
+              <Pressable
+                onPress={() => setSelectedOperatorId("")}
+                style={[styles.pill, !selectedOperatorId && styles.pillActive]}
+              >
+                <Text style={[styles.pillText, !selectedOperatorId && styles.pillTextActive]}>
+                  Sin operador
+                </Text>
+              </Pressable>
+
+              {operators.map((op) => {
+                const active = op.id === selectedOperatorId;
+                return (
                   <Pressable
-                    onPress={() => setSelectedOperatorId("")}
-                    style={[styles.pill, !selectedOperatorId && styles.pillActive]}
+                    key={op.id}
+                    onPress={() => setSelectedOperatorId(op.id)}
+                    style={[styles.pill, active && styles.pillActive]}
                   >
-                    <Text style={[styles.pillText, !selectedOperatorId && styles.pillTextActive]}>
-                      Sin operador
+                    <Text style={[styles.pillText, active && styles.pillTextActive]}>
+                      {(op.full_name || op.email || "Operario").toString()}
                     </Text>
                   </Pressable>
-
-                  {operators.map((op) => {
-                    const active = op.id === selectedOperatorId;
-                    return (
-                      <Pressable
-                        key={op.id}
-                        onPress={() => setSelectedOperatorId(op.id)}
-                        style={[styles.pill, active && styles.pillActive]}
-                      >
-                        <Text style={[styles.pillText, active && styles.pillTextActive]}>
-                          {(op.full_name || op.email || "Operario").toString()}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </>
-              )}
+                );
+              })}
             </View>
 
             <Pressable style={[styles.btn, loading && { opacity: 0.7 }]} onPress={onCreateEvent} disabled={loading}>
@@ -302,6 +391,7 @@ export default function AdminScreen() {
 
           <View style={styles.card}>
             <Text style={styles.h2}>Mis eventos creados (admin)</Text>
+
             {myEvents.length === 0 ? (
               <Text style={styles.small}>Aún no has creado eventos.</Text>
             ) : (
@@ -309,7 +399,7 @@ export default function AdminScreen() {
                 <View key={ev.id} style={styles.eventRow}>
                   <Text style={styles.eventTitle}>{ev.name}</Text>
                   <Text style={styles.small}>
-                    {ev.event_date ? ev.event_date : "(sin fecha)"}{" "}
+                    {ev.event_date ?? "(sin fecha)"}{" "}
                     {ev.start_time ? `| ${ev.start_time.slice(0, 5)}` : ""}{" "}
                     {ev.end_time ? `- ${ev.end_time.slice(0, 5)}` : ""}{" "}
                     {ev.location ? `| ${ev.location}` : ""}
@@ -334,7 +424,14 @@ const styles = StyleSheet.create({
   h2: { fontSize: 16, fontWeight: "800", marginBottom: 10 },
   small: { fontSize: 12, opacity: 0.8 },
   warn: { fontSize: 14, fontWeight: "700", marginBottom: 12, color: "#b45309" },
-  card: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, padding: 14, marginTop: 14, backgroundColor: "white" },
+  card: {
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 14,
+    backgroundColor: "white",
+  },
   input: { borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, padding: 12, marginBottom: 10 },
   row: { flexDirection: "row", gap: 10 },
   inputHalf: { flex: 1 },
