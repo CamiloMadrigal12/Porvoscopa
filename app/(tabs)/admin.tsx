@@ -77,10 +77,18 @@ export default function AdminScreen() {
 
   const isAdmin = useMemo(() => me?.role === "ADMIN", [me]);
 
+  /**
+   * ✅ Toggle robusto (evita problemas por taps rápidos / renders)
+   * - Si ya está: lo quita
+   * - Si no está: lo agrega
+   */
   const toggleOperator = (userId: string) => {
-    setSelectedOperatorIds((prev) =>
-      prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]
-    );
+    setSelectedOperatorIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return Array.from(next);
+    });
   };
 
   const clearOperators = () => setSelectedOperatorIds([]);
@@ -384,6 +392,11 @@ export default function AdminScreen() {
             <Text style={[styles.label, { marginTop: 6 }]}>Asignar a operador (opcional)</Text>
             <Text style={styles.small}>
               Operadores encontrados: {operators.length} | Seleccionados: {selectedOperatorIds.length}
+            </Text>
+
+            {/* ✅ DEBUG para confirmar que sí quedan seleccionados varios */}
+            <Text style={[styles.small, { opacity: 0.65 }]}>
+              Selección: {selectedOperatorIds.length ? selectedOperatorIds.join(", ") : "(ninguno)"}
             </Text>
 
             <View style={styles.pills}>
