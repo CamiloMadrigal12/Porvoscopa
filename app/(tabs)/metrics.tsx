@@ -33,7 +33,6 @@ type Profile = {
 };
 
 type AttendanceExportRow = {
-  event_id?: string | null;
   event_name: string | null;
   event_date: string | null;
   location: string | null;
@@ -45,7 +44,6 @@ type AttendanceExportRow = {
   invited_by: string | null;
 
   scanned_at: string | null;
-  created_at?: string | null;
 
   // ✅ quien registró
   scanned_by_name?: string | null;
@@ -62,26 +60,37 @@ function toYYYYMMDD(d: Date) {
 function csvEscape(v: any) {
   if (v === null || v === undefined) return "";
   const s = String(v);
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  // si tiene separador, salto o comillas => comillas + duplicar comillas internas
+  if (/[;\n\r"]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
 
-function toCSV(rows: any[], headers: { key: string; label: string }[]) {
-  const head = headers.map((h) => csvEscape(h.label)).join(",");
+// ✅ Excel en español: usa ; como delimitador
+function toCSV(
+  rows: any[],
+  headers: { key: string; label: string }[],
+  delimiter: string = ";"
+) {
+  const head = headers.map((h) => csvEscape(h.label)).join(delimiter);
   const body = rows
-    .map((r) => headers.map((h) => csvEscape(r?.[h.key])).join(","))
+    .map((r) => headers.map((h) => csvEscape(r?.[h.key])).join(delimiter))
     .join("\n");
   return `${head}\n${body}\n`;
 }
 
 function formatISO(iso: string | null) {
   if (!iso) return "";
+  // "2026-02-02T20:22:34..." -> "2026-02-02 20:22"
   return String(iso).replace("T", " ").slice(0, 16);
 }
 
 async function downloadCSV(filename: string, csv: string) {
+  // ✅ BOM para Excel (acentos/tildes)
+  const BOM = "\uFEFF";
+  const content = BOM + csv;
+
   if (Platform.OS === "web") {
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -100,7 +109,7 @@ async function downloadCSV(filename: string, csv: string) {
   }
 
   const fileUri = FileSystem.documentDirectory + filename;
-  await FileSystem.writeAsStringAsync(fileUri, csv, {
+  await FileSystem.writeAsStringAsync(fileUri, content, {
     encoding: FileSystem.EncodingType.UTF8,
   });
 
@@ -109,6 +118,7 @@ async function downloadCSV(filename: string, csv: string) {
     Alert.alert("Listo", `Archivo guardado en: ${fileUri}`);
     return;
   }
+
   await Sharing.shareAsync(fileUri, {
     mimeType: "text/csv",
     dialogTitle: "Exportar CSV",
@@ -196,64 +206,38 @@ export default function MetricsScreen() {
     }
   };
 
-  // ✅ Export 1: resumen básico
-  const exportSummaryCSV = async () => {
-    try {
-      if (!isAllowed)
-        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
-
-      const rows = [
-        { metric: "Eventos desde", value: fromDate },
-        { metric: "Reuniones (conteo)", value: eventsMonth },
-        { metric: "Asistentes (conteo)", value: attendanceMonth },
-      ];
-
-      const csv = toCSV(rows, [
-        { key: "metric", label: "Metrica" },
-        { key: "value", label: "Valor" },
-      ]);
-
-      await downloadCSV(`resumen_${fromDate}.csv`, csv);
-    } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "No se pudo exportar");
-    }
-  };
-
-  // ✅ Export 2: por barrio (tabla)
-  const exportByBarrioCSV = async () => {
-    try {
-      if (!isAllowed)
-        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
-
-      const csv = toCSV(byBarrio, [
-        { key: "neighborhood", label: "Barrio/Vereda" },
-        { key: "total", label: "Total" },
-      ]);
-
-      await downloadCSV(`asistencia_por_barrio_${fromDate}.csv`, csv);
-    } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "No se pudo exportar");
-    }
-  };
-
-  // ✅ Export 3: asistencias (TABLA) + “Registrado por”
+  /**
+   * ✅ ÚNICO EXPORT (el que quieres):
+   * CSV PLANO por columnas, Excel-friendly, con "Registrado por"
+   *
+   * Si quieres TODO histórico: deja sin .gte
+   * Si quieres solo desde fromDate: activa el .gte("created_at", fromDate)
+   */
   const exportAttendanceCSV = async () => {
     try {
       if (!isAllowed)
         return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
 
-      const { data, error } = await supabase
+      const q = supabase
         .from("v_attendance_with_event")
         .select(
-          "event_name,event_date,location,full_name,document,neighborhood,phone,invited_by,scanned_at,scanned_by_name,scanned_by_email,created_at"
+          "event_name,event_date,location,full_name,document,neighborhood,phone,invited_by,scanned_at,scanned_by_name,scanned_by_email"
         )
-        .gte("created_at", fromDate)
         .order("event_date", { ascending: false })
         .order("scanned_at", { ascending: false });
 
+      // ✅ descomenta si quieres filtrar solo desde el inicio del mes:
+      // q.gte("created_at", fromDate);
+
+      const { data, error } = await q;
       if (error) throw error;
 
       const rows = (data ?? []) as AttendanceExportRow[];
+
+      if (rows.length === 0) {
+        Alert.alert("Sin datos", "No hay asistencias para exportar.");
+        return;
+      }
 
       const normalized = rows.map((r) => ({
         event_name: r.event_name ?? "",
@@ -278,63 +262,13 @@ export default function MetricsScreen() {
         { key: "phone", label: "Telefono" },
         { key: "invited_by", label: "Invitado por" },
         { key: "scanned_at", label: "Escaneado en" },
-        { key: "registered_by", label: "Registrado por" }, // ✅ NUEVO
+        { key: "registered_by", label: "Registrado por" },
       ]);
 
-      await downloadCSV(`asistencias_${fromDate}.csv`, csv);
+      // ✅ Nombre fijo para que no se confundan
+      await downloadCSV(`asistencias.csv`, csv);
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "No se pudo exportar asistencias");
-    }
-  };
-
-  // ✅ Export 4: resumen por evento (TABLA) Evento | Fecha | Lugar | Total
-  const exportSummaryByEventCSV = async () => {
-    try {
-      if (!isAllowed)
-        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
-
-      const { data, error } = await supabase
-        .from("v_attendance_with_event")
-        .select("event_name,event_date,location,created_at")
-        .gte("created_at", fromDate);
-
-      if (error) throw error;
-
-      const rows = (data ?? []) as AttendanceExportRow[];
-
-      const map = new Map<
-        string,
-        { event_name: string; event_date: string; location: string; total: number }
-      >();
-
-      for (const r of rows) {
-        const key = `${r.event_name ?? ""}__${r.event_date ?? ""}__${r.location ?? ""}`;
-        const curr = map.get(key);
-        if (curr) curr.total += 1;
-        else {
-          map.set(key, {
-            event_name: r.event_name ?? "",
-            event_date: r.event_date ?? "",
-            location: r.location ?? "",
-            total: 1,
-          });
-        }
-      }
-
-      const summary = Array.from(map.values()).sort((a, b) =>
-        String(b.event_date).localeCompare(String(a.event_date))
-      );
-
-      const csv = toCSV(summary, [
-        { key: "event_name", label: "Evento" },
-        { key: "event_date", label: "Fecha" },
-        { key: "location", label: "Lugar" },
-        { key: "total", label: "Total asistentes" },
-      ]);
-
-      await downloadCSV(`resumen_por_evento_${fromDate}.csv`, csv);
-    } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "No se pudo exportar resumen por evento");
     }
   };
 
@@ -403,31 +337,12 @@ export default function MetricsScreen() {
             )}
           </View>
 
+          {/* ✅ SOLO 1 BOTÓN */}
           <View style={styles.card}>
             <Text style={styles.h2}>Descargar</Text>
 
-            <Pressable style={styles.btn} onPress={exportSummaryCSV} disabled={loading}>
-              <Text style={styles.btnText}>Descargar resumen (CSV)</Text>
-            </Pressable>
-
             <Pressable
-              style={[styles.btn, { marginTop: 10 }]}
-              onPress={exportSummaryByEventCSV}
-              disabled={loading}
-            >
-              <Text style={styles.btnText}>Descargar resumen por evento (CSV)</Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.btn, { marginTop: 10 }]}
-              onPress={exportByBarrioCSV}
-              disabled={loading}
-            >
-              <Text style={styles.btnText}>Descargar por barrio (CSV)</Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.btn, { marginTop: 10 }]}
+              style={styles.btn}
               onPress={exportAttendanceCSV}
               disabled={loading}
             >
@@ -435,8 +350,7 @@ export default function MetricsScreen() {
             </Pressable>
 
             <Text style={[styles.small, { marginTop: 8 }]}>
-              * Los CSV usan la vista{" "}
-              <Text style={{ fontWeight: "800" }}>v_attendance_with_event</Text>.
+              * CSV para Excel (separado por columnas) e incluye “Registrado por”.
             </Text>
           </View>
         </>
