@@ -1,6 +1,5 @@
 import { Tabs } from "expo-router";
 import { useEffect, useState } from "react";
-import { Platform } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
 export default function TabLayout() {
@@ -36,21 +35,25 @@ export default function TabLayout() {
   // ✅ Evita render antes de tener rol
   if (!ready) return null;
 
-  // ✅ NO hooks aquí (sin useMemo)
+  // ✅ flags por rol (sin hooks)
   const canSeeAttendance = role === "OPERADOR";
   const canSeeAdmin = role === "ADMIN";
   const canSeeMetrics = role === "METRICAS" || role === "ADMIN";
 
-  // ⚙️ Decide si METRICAS también ve "Mis eventos"
-  const metricsCanSeeIndex = false; // cambia a true si quieres
+  // ⚙️ si quieres que METRICAS también vea "Mis eventos", ponlo en true
+  const metricsCanSeeIndex = false;
+
   const canSeeIndex =
-    role === "OPERADOR" || role === "ADMIN" || (role === "METRICAS" && metricsCanSeeIndex);
+    role === "OPERADOR" ||
+    role === "ADMIN" ||
+    (role === "METRICAS" && metricsCanSeeIndex);
 
   return (
     <Tabs
       screenOptions={{
         headerShown: true,
-        tabBarStyle: Platform.OS === "web" ? { display: "none" } : undefined,
+        // ✅ IMPORTANTE: NO ocultar tabs en web
+        // Antes lo tenías oculto y por eso no podías ir a Métricas.
       }}
     >
       {/* Mis eventos */}
