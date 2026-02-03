@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
 // ✅ Solo se importan en runtime (evita problemas si no está instalado en web)
@@ -25,6 +33,7 @@ type Profile = {
 };
 
 type AttendanceExportRow = {
+  event_id?: string | null; // ✅ para agrupar seguro
   event_name: string | null;
   event_date: string | null;
   location: string | null;
@@ -34,6 +43,7 @@ type AttendanceExportRow = {
   phone: string | null;
   invited_by: string | null;
   scanned_at: string | null;
+  created_at?: string | null; // ✅ por si filtras desde la vista
 };
 
 function toYYYYMMDD(d: Date) {
@@ -46,7 +56,6 @@ function toYYYYMMDD(d: Date) {
 function csvEscape(v: any) {
   if (v === null || v === undefined) return "";
   const s = String(v);
-  // si tiene coma, salto, o comillas, encierra entre comillas y duplica comillas internas
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -59,9 +68,83 @@ function toCSV(rows: any[], headers: { key: string; label: string }[]) {
   return `${head}\n${body}\n`;
 }
 
+function formatISO(iso: string | null) {
+  if (!iso) return "";
+  // "2026-02-02T20:22:34..." -> "2026-02-02 20:22"
+  return String(iso).replace("T", " ").slice(0, 16);
+}
+
+/**
+ * ✅ Construye CSV con secciones por evento:
+ * EVENTO: X | FECHA: ... | LUGAR: ... | TOTAL: N
+ * (headers)
+ * filas...
+ * (línea en blanco)
+ */
+function buildCSVGroupedByEvent(rows: AttendanceExportRow[]) {
+  const sorted = [...rows].sort((a, b) => {
+    const an = (a.event_name ?? "").localeCompare(b.event_name ?? "");
+    if (an !== 0) return an;
+    return String(b.event_date ?? "").localeCompare(String(a.event_date ?? ""));
+  });
+
+  // agrupar por event_id (o por nombre si no viene)
+  const groups = new Map<string, AttendanceExportRow[]>();
+  for (const r of sorted) {
+    const key = String(r.event_id ?? r.event_name ?? "SIN_EVENTO");
+    const list = groups.get(key) ?? [];
+    list.push(r);
+    groups.set(key, list);
+  }
+
+  const headers = [
+    "Nombre",
+    "Documento",
+    "Barrio/Vereda",
+    "Telefono",
+    "Invitado por",
+    "Escaneado en",
+  ];
+
+  const lines: string[] = [];
+
+  for (const [, list] of groups) {
+    const first = list[0] ?? ({} as AttendanceExportRow);
+    const eventName = first.event_name ?? "(sin nombre)";
+    const eventDate = first.event_date ?? "";
+    const location = first.location ?? "";
+    const total = list.length;
+
+    lines.push(
+      `EVENTO: ${csvEscape(eventName)} | FECHA: ${csvEscape(
+        eventDate
+      )} | LUGAR: ${csvEscape(location)} | TOTAL: ${total}`
+    );
+    lines.push(headers.map(csvEscape).join(","));
+
+    for (const a of list) {
+      lines.push(
+        [
+          a.full_name ?? "",
+          a.document ?? "",
+          a.neighborhood ?? "",
+          a.phone ?? "",
+          a.invited_by ?? "",
+          formatISO(a.scanned_at ?? null),
+        ]
+          .map(csvEscape)
+          .join(",")
+      );
+    }
+
+    lines.push(""); // línea en blanco entre eventos
+  }
+
+  return lines.join("\n");
+}
+
 async function downloadCSV(filename: string, csv: string) {
   if (Platform.OS === "web") {
-    // descarga en navegador
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -73,25 +156,32 @@ async function downloadCSV(filename: string, csv: string) {
   }
 
   if (!FileSystem || !Sharing) {
-    Alert.alert("Falta dependencia", "Instala: npx expo install expo-file-system expo-sharing");
+    Alert.alert(
+      "Falta dependencia",
+      "Instala: npx expo install expo-file-system expo-sharing"
+    );
     return;
   }
 
   const fileUri = FileSystem.documentDirectory + filename;
-  await FileSystem.writeAsStringAsync(fileUri, csv, { encoding: FileSystem.EncodingType.UTF8 });
+  await FileSystem.writeAsStringAsync(fileUri, csv, {
+    encoding: FileSystem.EncodingType.UTF8,
+  });
 
   const canShare = await Sharing.isAvailableAsync();
   if (!canShare) {
     Alert.alert("Listo", `Archivo guardado en: ${fileUri}`);
     return;
   }
-  await Sharing.shareAsync(fileUri, { mimeType: "text/csv", dialogTitle: "Exportar CSV" });
+  await Sharing.shareAsync(fileUri, {
+    mimeType: "text/csv",
+    dialogTitle: "Exportar CSV",
+  });
 }
 
 export default function MetricsScreen() {
   const [loading, setLoading] = useState(true);
 
-  // ✅ control de rol
   const [me, setMe] = useState<Profile | null>(null);
 
   const [eventsMonth, setEventsMonth] = useState(0);
@@ -99,7 +189,7 @@ export default function MetricsScreen() {
   const [byBarrio, setByBarrio] = useState<BarrioRow[]>([]);
 
   // ✅ rango (por defecto mes actual)
-  const [fromDate, setFromDate] = useState<string>(() => {
+  const [fromDate] = useState<string>(() => {
     const now = new Date();
     return toYYYYMMDD(new Date(now.getFullYear(), now.getMonth(), 1));
   });
@@ -129,7 +219,6 @@ export default function MetricsScreen() {
       const profile = await loadMe();
       setMe(profile);
 
-      // si no tiene permisos, no seguimos pegándole a la BD
       if (!profile || !(profile.role === "METRICAS" || profile.role === "ADMIN")) {
         setEventsMonth(0);
         setAttendanceMonth(0);
@@ -137,11 +226,9 @@ export default function MetricsScreen() {
         return;
       }
 
-      const monthStart = fromDate; // YYYY-MM-DD
+      const monthStart = fromDate;
 
-      /* =========================
-         1) Eventos desde fromDate
-      ==========================*/
+      // 1) Eventos desde fromDate
       const evRes = await supabase
         .from("events")
         .select("id", { count: "exact", head: true })
@@ -150,9 +237,7 @@ export default function MetricsScreen() {
       if (evRes.error) throw evRes.error;
       setEventsMonth(evRes.count ?? 0);
 
-      /* =========================
-         2) Asistentes desde fromDate
-      ==========================*/
+      // 2) Asistentes desde fromDate
       const attRes = await supabase
         .from("attendance")
         .select("id", { count: "exact", head: true })
@@ -161,9 +246,7 @@ export default function MetricsScreen() {
       if (attRes.error) throw attRes.error;
       setAttendanceMonth(attRes.count ?? 0);
 
-      /* =========================
-         3) Por barrio / vereda (RPC)
-      ==========================*/
+      // 3) Por barrio / vereda (RPC)
       const barrioRes = await supabase.rpc("attendance_by_barrio_month", {
         from_date: monthStart,
       });
@@ -177,10 +260,11 @@ export default function MetricsScreen() {
     }
   };
 
-  // ✅ Export 1: resumen
+  // Export 1: resumen
   const exportSummaryCSV = async () => {
     try {
-      if (!isAllowed) return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
+      if (!isAllowed)
+        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
 
       const rows = [
         { metric: "Eventos desde", value: fromDate },
@@ -199,10 +283,11 @@ export default function MetricsScreen() {
     }
   };
 
-  // ✅ Export 2: por barrio
+  // Export 2: por barrio
   const exportByBarrioCSV = async () => {
     try {
-      if (!isAllowed) return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
+      if (!isAllowed)
+        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
 
       const csv = toCSV(byBarrio, [
         { key: "neighborhood", label: "Barrio/Vereda" },
@@ -215,16 +300,16 @@ export default function MetricsScreen() {
     }
   };
 
-  // ✅ Export 3: asistencias detalladas con nombre de evento
+  // Export 3: asistencias “planas”
   const exportAttendanceCSV = async () => {
     try {
-      if (!isAllowed) return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
+      if (!isAllowed)
+        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
 
-      // OJO: esto asume que creaste la VIEW v_attendance_with_event (abajo te doy el SQL)
       const { data, error } = await supabase
         .from("v_attendance_with_event")
         .select(
-          "event_name,event_date,location,full_name,document,neighborhood,phone,invited_by,scanned_at"
+          "event_id,event_name,event_date,location,full_name,document,neighborhood,phone,invited_by,scanned_at,created_at"
         )
         .gte("created_at", fromDate)
         .order("event_date", { ascending: false });
@@ -251,6 +336,38 @@ export default function MetricsScreen() {
     }
   };
 
+  // ✅ Export 4: TODO agrupado por evento (lo que pediste)
+  const exportAllByEventCSV = async () => {
+    try {
+      if (!isAllowed)
+        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
+
+      const { data, error } = await supabase
+        .from("v_attendance_with_event")
+        .select(
+          "event_id,event_name,event_date,location,full_name,document,neighborhood,phone,invited_by,scanned_at,created_at"
+        )
+        .order("event_date", { ascending: false });
+
+      // Si quieres SOLO desde fromDate, activa esto:
+      // .gte("created_at", fromDate)
+
+      if (error) throw error;
+
+      const rows = (data ?? []) as AttendanceExportRow[];
+
+      if (rows.length === 0) {
+        Alert.alert("Sin datos", "No hay asistencias para exportar.");
+        return;
+      }
+
+      const csv = buildCSVGroupedByEvent(rows);
+      await downloadCSV(`todo_por_evento.csv`, csv);
+    } catch (e: any) {
+      Alert.alert("Error", e?.message ?? "No se pudo exportar todo por evento");
+    }
+  };
+
   useEffect(() => {
     loadMetrics();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -273,24 +390,18 @@ export default function MetricsScreen() {
       ) : (
         <>
           <View style={styles.card}>
-            <Text style={styles.h2}>Rango</Text>
-            <Text style={styles.small}>Desde (YYYY-MM-DD):</Text>
-            <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
-              <Pressable style={styles.pill} onPress={() => setFromDate(fromDate)}>
-                <Text style={styles.pillText}>{fromDate}</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.btnGray, { flex: 1 }]}
-                onPress={loadMetrics}
-                disabled={loading}
-              >
-                <Text style={styles.btnText}>{loading ? "Cargando…" : "Actualizar"}</Text>
-              </Pressable>
-            </View>
+            <Text style={styles.h2}>Métricas del mes</Text>
+            <Text style={styles.small}>Desde: {fromDate}</Text>
 
-            <Text style={[styles.small, { marginTop: 8, opacity: 0.7 }]}>
-              Si quieres que esto sea un selector de fecha tipo calendario, te lo dejo también.
-            </Text>
+            <Pressable
+              style={[styles.btnGray, { marginTop: 10 }]}
+              onPress={loadMetrics}
+              disabled={loading}
+            >
+              <Text style={styles.btnText}>
+                {loading ? "Cargando…" : "Actualizar"}
+              </Text>
+            </Pressable>
           </View>
 
           <View style={styles.card}>
@@ -300,7 +411,9 @@ export default function MetricsScreen() {
 
           <View style={styles.card}>
             <Text style={styles.kpiLabel}>Asistentes desde {fromDate}</Text>
-            <Text style={styles.kpiValue}>{loading ? "…" : attendanceMonth}</Text>
+            <Text style={styles.kpiValue}>
+              {loading ? "…" : attendanceMonth}
+            </Text>
           </View>
 
           <View style={styles.card}>
@@ -320,24 +433,49 @@ export default function MetricsScreen() {
             )}
           </View>
 
-          {/* ✅ Export buttons */}
           <View style={styles.card}>
             <Text style={styles.h2}>Descargar</Text>
 
-            <Pressable style={styles.btn} onPress={exportSummaryCSV} disabled={loading}>
+            <Pressable
+              style={styles.btn}
+              onPress={exportSummaryCSV}
+              disabled={loading}
+            >
               <Text style={styles.btnText}>Descargar resumen (CSV)</Text>
             </Pressable>
 
-            <Pressable style={[styles.btn, { marginTop: 10 }]} onPress={exportByBarrioCSV} disabled={loading}>
+            <Pressable
+              style={[styles.btn, { marginTop: 10 }]}
+              onPress={exportByBarrioCSV}
+              disabled={loading}
+            >
               <Text style={styles.btnText}>Descargar por barrio (CSV)</Text>
             </Pressable>
 
-            <Pressable style={[styles.btn, { marginTop: 10 }]} onPress={exportAttendanceCSV} disabled={loading}>
+            <Pressable
+              style={[styles.btn, { marginTop: 10 }]}
+              onPress={exportAttendanceCSV}
+              disabled={loading}
+            >
               <Text style={styles.btnText}>Descargar asistencias (CSV)</Text>
             </Pressable>
 
+            <Pressable
+              style={[styles.btn, { marginTop: 10 }]}
+              onPress={exportAllByEventCSV}
+              disabled={loading}
+            >
+              <Text style={styles.btnText}>
+                Descargar TODO por evento (CSV)
+              </Text>
+            </Pressable>
+
             <Text style={[styles.small, { marginTop: 8 }]}>
-              * El CSV de asistencias usa la vista <Text style={{ fontWeight: "800" }}>v_attendance_with_event</Text>.
+              * Los CSV usan la vista{" "}
+              <Text style={{ fontWeight: "800" }}>
+                v_attendance_with_event
+              </Text>
+              .
             </Text>
           </View>
         </>
@@ -388,14 +526,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   btnText: { color: "white", fontWeight: "800" },
-
-  pill: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    justifyContent: "center",
-  },
-  pillText: { fontSize: 13, fontWeight: "800" },
 });
