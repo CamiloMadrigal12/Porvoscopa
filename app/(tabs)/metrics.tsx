@@ -45,9 +45,12 @@ type AttendanceExportRow = {
 
   scanned_at: string | null;
 
-  // ✅ quien registró
+  // ✅ quién registró
   scanned_by_name?: string | null;
   scanned_by_email?: string | null;
+
+  // opcional si lo tienes en la vista
+  created_at?: string | null;
 };
 
 function toYYYYMMDD(d: Date) {
@@ -60,7 +63,7 @@ function toYYYYMMDD(d: Date) {
 function csvEscape(v: any) {
   if (v === null || v === undefined) return "";
   const s = String(v);
-  // si tiene separador, salto o comillas => comillas + duplicar comillas internas
+  // ✅ como usamos ;, escapamos ; además de comillas/saltos
   if (/[;\n\r"]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -128,13 +131,14 @@ async function downloadCSV(filename: string, csv: string) {
 export default function MetricsScreen() {
   const [loading, setLoading] = useState(true);
 
+  // ✅ control de rol
   const [me, setMe] = useState<Profile | null>(null);
 
   const [eventsMonth, setEventsMonth] = useState(0);
   const [attendanceMonth, setAttendanceMonth] = useState(0);
   const [byBarrio, setByBarrio] = useState<BarrioRow[]>([]);
 
-  // ✅ rango (por defecto mes actual)
+  // ✅ desde inicio del mes (solo para métricas en pantalla)
   const [fromDate] = useState<string>(() => {
     const now = new Date();
     return toYYYYMMDD(new Date(now.getFullYear(), now.getMonth(), 1));
@@ -165,7 +169,9 @@ export default function MetricsScreen() {
       const profile = await loadMe();
       setMe(profile);
 
-      if (!profile || !(profile.role === "METRICAS" || profile.role === "ADMIN")) {
+      // ✅ permisos: no consultes más si no corresponde
+      const allowed = profile?.role === "METRICAS" || profile?.role === "ADMIN";
+      if (!profile || !allowed) {
         setEventsMonth(0);
         setAttendanceMonth(0);
         setByBarrio([]);
@@ -174,7 +180,9 @@ export default function MetricsScreen() {
 
       const monthStart = fromDate;
 
-      // 1) Eventos desde fromDate
+      /* =========================
+         1) Eventos desde fromDate
+      ==========================*/
       const evRes = await supabase
         .from("events")
         .select("id", { count: "exact", head: true })
@@ -183,7 +191,9 @@ export default function MetricsScreen() {
       if (evRes.error) throw evRes.error;
       setEventsMonth(evRes.count ?? 0);
 
-      // 2) Asistentes desde fromDate
+      /* =========================
+         2) Asistentes desde fromDate
+      ==========================*/
       const attRes = await supabase
         .from("attendance")
         .select("id", { count: "exact", head: true })
@@ -192,7 +202,9 @@ export default function MetricsScreen() {
       if (attRes.error) throw attRes.error;
       setAttendanceMonth(attRes.count ?? 0);
 
-      // 3) Por barrio / vereda (RPC)
+      /* =========================
+         3) Por barrio / vereda (RPC)
+      ==========================*/
       const barrioRes = await supabase.rpc("attendance_by_barrio_month", {
         from_date: monthStart,
       });
@@ -201,6 +213,9 @@ export default function MetricsScreen() {
       setByBarrio((barrioRes.data ?? []) as BarrioRow[]);
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "No se pudieron cargar métricas");
+      setEventsMonth(0);
+      setAttendanceMonth(0);
+      setByBarrio([]);
     } finally {
       setLoading(false);
     }
@@ -210,15 +225,17 @@ export default function MetricsScreen() {
    * ✅ ÚNICO EXPORT (el que quieres):
    * CSV PLANO por columnas, Excel-friendly, con "Registrado por"
    *
-   * Si quieres TODO histórico: deja sin .gte
-   * Si quieres solo desde fromDate: activa el .gte("created_at", fromDate)
+   * - Descarga TODO histórico (sin filtro)
+   * - Si algún día quieres filtrar por mes: descomenta el .gte("created_at", fromDate)
    */
   const exportAttendanceCSV = async () => {
     try {
-      if (!isAllowed)
-        return Alert.alert("Sin permisos", "No tienes permisos para exportar.");
+      if (!isAllowed) {
+        Alert.alert("Sin permisos", "No tienes permisos para exportar.");
+        return;
+      }
 
-      const q = supabase
+      const query = supabase
         .from("v_attendance_with_event")
         .select(
           "event_name,event_date,location,full_name,document,neighborhood,phone,invited_by,scanned_at,scanned_by_name,scanned_by_email"
@@ -226,10 +243,10 @@ export default function MetricsScreen() {
         .order("event_date", { ascending: false })
         .order("scanned_at", { ascending: false });
 
-      // ✅ descomenta si quieres filtrar solo desde el inicio del mes:
-      // q.gte("created_at", fromDate);
+      // ✅ Si quieres filtrar solo desde el mes actual, activa esto:
+      // query.gte("created_at", fromDate);
 
-      const { data, error } = await q;
+      const { data, error } = await query;
       if (error) throw error;
 
       const rows = (data ?? []) as AttendanceExportRow[];
@@ -265,11 +282,18 @@ export default function MetricsScreen() {
         { key: "registered_by", label: "Registrado por" },
       ]);
 
-      // ✅ Nombre fijo para que no se confundan
-      await downloadCSV(`asistencias.csv`, csv);
+      // ✅ Nombre fijo (menos enredos)
+      await downloadCSV("asistencias.csv", csv);
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "No se pudo exportar asistencias");
     }
+  };
+
+  const onSignOut = async () => {
+    await supabase.auth.signOut();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { router } = require("expo-router");
+    router.replace("/login");
   };
 
   useEffect(() => {
@@ -290,36 +314,40 @@ export default function MetricsScreen() {
           <Text style={styles.warn}>
             No tienes permiso para ver métricas. (Requiere rol METRICAS o ADMIN)
           </Text>
+
+          <Pressable style={[styles.btnDanger, { marginTop: 10 }]} onPress={onSignOut}>
+            <Text style={styles.btnText}>Cerrar sesión</Text>
+          </Pressable>
         </View>
       ) : (
         <>
+          {/* Encabezado + actualizar */}
           <View style={styles.card}>
             <Text style={styles.h2}>Métricas del mes</Text>
             <Text style={styles.small}>Desde: {fromDate}</Text>
 
             <Pressable
-              style={[styles.btnGray, { marginTop: 10 }]}
+              style={[styles.btnGray, { marginTop: 10 }, loading && { opacity: 0.7 }]}
               onPress={loadMetrics}
               disabled={loading}
             >
-              <Text style={styles.btnText}>
-                {loading ? "Cargando…" : "Actualizar"}
-              </Text>
+              <Text style={styles.btnText}>{loading ? "Cargando…" : "Actualizar"}</Text>
             </Pressable>
           </View>
 
+          {/* KPI 1 */}
           <View style={styles.card}>
             <Text style={styles.kpiLabel}>Reuniones desde {fromDate}</Text>
             <Text style={styles.kpiValue}>{loading ? "…" : eventsMonth}</Text>
           </View>
 
+          {/* KPI 2 */}
           <View style={styles.card}>
             <Text style={styles.kpiLabel}>Asistentes desde {fromDate}</Text>
-            <Text style={styles.kpiValue}>
-              {loading ? "…" : attendanceMonth}
-            </Text>
+            <Text style={styles.kpiValue}>{loading ? "…" : attendanceMonth}</Text>
           </View>
 
+          {/* Barrio/Vereda */}
           <View style={styles.card}>
             <Text style={styles.h2}>Asistencia por barrio / vereda</Text>
 
@@ -337,21 +365,27 @@ export default function MetricsScreen() {
             )}
           </View>
 
-          {/* ✅ SOLO 1 BOTÓN */}
+          {/* ✅ Descargar (solo 1 botón) + cerrar sesión */}
           <View style={styles.card}>
             <Text style={styles.h2}>Descargar</Text>
 
             <Pressable
-              style={styles.btn}
+              style={[styles.btn, loading && { opacity: 0.7 }]}
               onPress={exportAttendanceCSV}
               disabled={loading}
             >
               <Text style={styles.btnText}>Descargar asistencias (CSV)</Text>
             </Pressable>
 
-            <Text style={[styles.small, { marginTop: 8 }]}>
-              * CSV para Excel (separado por columnas) e incluye “Registrado por”.
-            </Text>
+           
+
+            <Pressable
+              style={[styles.btnDanger, { marginTop: 12 }, loading && { opacity: 0.7 }]}
+              onPress={onSignOut}
+              disabled={loading}
+            >
+              <Text style={styles.btnText}>Cerrar sesión</Text>
+            </Pressable>
           </View>
         </>
       )}
@@ -396,6 +430,12 @@ const styles = StyleSheet.create({
   },
   btnGray: {
     backgroundColor: "#374151",
+    padding: 14,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  btnDanger: {
+    backgroundColor: "#7f1d1d",
     padding: 14,
     borderRadius: 10,
     alignItems: "center",
