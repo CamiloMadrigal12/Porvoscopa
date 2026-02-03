@@ -69,12 +69,21 @@ export default function AdminScreen() {
 
   // Operadores
   const [operators, setOperators] = useState<Profile[]>([]);
-  const [selectedOperatorId, setSelectedOperatorId] = useState<string>("");
+  // ✅ MULTI selección
+  const [selectedOperatorIds, setSelectedOperatorIds] = useState<string[]>([]);
 
   // Eventos creados
   const [myEvents, setMyEvents] = useState<EventRow[]>([]);
 
   const isAdmin = useMemo(() => me?.role === "ADMIN", [me]);
+
+  const toggleOperator = (userId: string) => {
+    setSelectedOperatorIds((prev) =>
+      prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]
+    );
+  };
+
+  const clearOperators = () => setSelectedOperatorIds([]);
 
   const loadMeAndOperators = async () => {
     const { data: authData } = await supabase.auth.getUser();
@@ -100,14 +109,7 @@ export default function AdminScreen() {
     const { data: ops, error: oErr } = await supabase
       .from("profiles")
       .select("id,email,full_name,role")
-      .in("role", [
-        "OPERADOR",
-        "OPERARIO",
-        "operador",
-        "operario",
-        "Operador",
-        "Operario",
-      ]);
+      .in("role", ["OPERADOR", "OPERARIO", "operador", "operario", "Operador", "Operario"]);
 
     if (oErr) {
       Alert.alert("Error cargando operadores", oErr.message);
@@ -158,10 +160,7 @@ export default function AdminScreen() {
     const fullStart = mergeDateAndTime(eventDate, startTime);
     const fullEnd = endTime ? mergeDateAndTime(eventDate, endTime) : null;
     if (fullEnd && fullEnd <= fullStart) {
-      return Alert.alert(
-        "Hora inválida",
-        "La hora de fin debe ser mayor a la hora de inicio."
-      );
+      return Alert.alert("Hora inválida", "La hora de fin debe ser mayor a la hora de inicio.");
     }
 
     setLoading(true);
@@ -190,20 +189,21 @@ export default function AdminScreen() {
 
       if (cErr) throw cErr;
 
-      // 2) Asignar operador SOLO si seleccionaste uno
-      if (selectedOperatorId) {
-        const { error: aErr } = await supabase.from("event_staff").insert({
+      // 2) ✅ Asignar VARIOS operadores (si seleccionaste)
+      if (selectedOperatorIds.length > 0) {
+        const rows = selectedOperatorIds.map((opId) => ({
           event_id: created.id,
-          user_id: selectedOperatorId,
-        });
+          user_id: opId,
+        }));
 
+        const { error: aErr } = await supabase.from("event_staff").insert(rows);
         if (aErr) throw aErr;
       }
 
       Alert.alert(
         "Listo",
-        selectedOperatorId
-          ? "Evento creado y asignado."
+        selectedOperatorIds.length > 0
+          ? `Evento creado y asignado a ${selectedOperatorIds.length} operador(es).`
           : "Evento creado (sin operador asignado)."
       );
 
@@ -212,7 +212,7 @@ export default function AdminScreen() {
       // Limpiar
       setName("");
       setLocation("");
-      setSelectedOperatorId("");
+      clearOperators();
       setStartTime(null);
       setEndTime(null);
     } catch (err: any) {
@@ -245,10 +245,7 @@ export default function AdminScreen() {
     </View>
   );
 
-  const WebTimeInput = (
-    value: Date | null,
-    onChange: (d: Date | null) => void
-  ) => (
+  const WebTimeInput = (value: Date | null, onChange: (d: Date | null) => void) => (
     <View style={styles.webFieldHalf}>
       <input
         type="time"
@@ -276,9 +273,7 @@ export default function AdminScreen() {
 
       {!isAdmin ? (
         <View style={styles.card}>
-          <Text style={styles.warn}>
-            No eres ADMIN. Esta pantalla es solo para admin.
-          </Text>
+          <Text style={styles.warn}>No eres ADMIN. Esta pantalla es solo para admin.</Text>
           <Pressable style={styles.btn} onPress={onSignOut}>
             <Text style={styles.btnText}>Cerrar sesión</Text>
           </Pressable>
@@ -309,10 +304,7 @@ export default function AdminScreen() {
               WebDateInput
             ) : (
               <>
-                <Pressable
-                  style={styles.input}
-                  onPress={() => setShowDatePicker(true)}
-                >
+                <Pressable style={styles.input} onPress={() => setShowDatePicker(true)}>
                   <Text>{toYYYYMMDD(eventDate)}</Text>
                 </Pressable>
 
@@ -389,22 +381,20 @@ export default function AdminScreen() {
               </View>
             </View>
 
-            <Text style={[styles.label, { marginTop: 6 }]}>
-              Asignar a operador (opcional)
-            </Text>
+            <Text style={[styles.label, { marginTop: 6 }]}>Asignar a operador (opcional)</Text>
             <Text style={styles.small}>
-              Operadores encontrados: {operators.length}
+              Operadores encontrados: {operators.length} | Seleccionados: {selectedOperatorIds.length}
             </Text>
 
             <View style={styles.pills}>
               <Pressable
-                onPress={() => setSelectedOperatorId("")}
-                style={[styles.pill, !selectedOperatorId && styles.pillActive]}
+                onPress={clearOperators}
+                style={[styles.pill, selectedOperatorIds.length === 0 && styles.pillActive]}
               >
                 <Text
                   style={[
                     styles.pillText,
-                    !selectedOperatorId && styles.pillTextActive,
+                    selectedOperatorIds.length === 0 && styles.pillTextActive,
                   ]}
                 >
                   Sin operador
@@ -412,19 +402,14 @@ export default function AdminScreen() {
               </Pressable>
 
               {operators.map((op) => {
-                const active = op.id === selectedOperatorId;
+                const active = selectedOperatorIds.includes(op.id);
                 return (
                   <Pressable
                     key={op.id}
-                    onPress={() => setSelectedOperatorId(op.id)}
+                    onPress={() => toggleOperator(op.id)}
                     style={[styles.pill, active && styles.pillActive]}
                   >
-                    <Text
-                      style={[
-                        styles.pillText,
-                        active && styles.pillTextActive,
-                      ]}
-                    >
+                    <Text style={[styles.pillText, active && styles.pillTextActive]}>
                       {(op.full_name || op.email || "Operario").toString()}
                     </Text>
                   </Pressable>
@@ -437,9 +422,7 @@ export default function AdminScreen() {
               onPress={onCreateEvent}
               disabled={loading}
             >
-              <Text style={styles.btnText}>
-                {loading ? "Creando..." : "Crear y asignar"}
-              </Text>
+              <Text style={styles.btnText}>{loading ? "Creando..." : "Crear y asignar"}</Text>
             </Pressable>
           </View>
 
@@ -463,10 +446,7 @@ export default function AdminScreen() {
             )}
           </View>
 
-          <Pressable
-            style={[styles.btn, { backgroundColor: "#374151" }]}
-            onPress={onSignOut}
-          >
+          <Pressable style={[styles.btn, { backgroundColor: "#374151" }]} onPress={onSignOut}>
             <Text style={styles.btnText}>Cerrar sesión</Text>
           </Pressable>
         </>
