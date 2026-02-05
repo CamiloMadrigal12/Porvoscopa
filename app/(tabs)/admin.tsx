@@ -2,14 +2,12 @@ import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   Alert,
-  FlatList,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  View,
+  View
 } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
@@ -31,147 +29,164 @@ type Profile = {
 export default function AdminScreen() {
   const [loading, setLoading] = useState(true);
   const [events, setEvents] = useState<Event[]>([]);
-  
-  // Modal crear/editar
-  const [modalOpen, setModalOpen] = useState(false);
-  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
-  const [eventName, setEventName] = useState("");
-  const [eventLocation, setEventLocation] = useState("");
-  const [eventDate, setEventDate] = useState("");
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
-  
-  // Modal personal
-  const [staffModalOpen, setStaffModalOpen] = useState(false);
   const [allUsers, setAllUsers] = useState<Profile[]>([]);
+  
+  // Crear nuevo
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newLocation, setNewLocation] = useState("");
+  const [newDate, setNewDate] = useState("");
+  const [newStart, setNewStart] = useState("");
+  const [newEnd, setNewEnd] = useState("");
+  const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
+
+  // Expandir evento
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editLocation, setEditLocation] = useState("");
+  const [editDate, setEditDate] = useState("");
+  const [editStart, setEditStart] = useState("");
+  const [editEnd, setEditEnd] = useState("");
   const [assignedUsers, setAssignedUsers] = useState<string[]>([]);
 
-  const loadEvents = async () => {
+  const loadData = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      // Eventos
+      const { data: evData, error: evError } = await supabase
         .from("events")
         .select("*")
         .order("event_date", { ascending: false });
+      if (evError) throw evError;
+      setEvents((evData ?? []) as Event[]);
 
-      if (error) throw error;
-      setEvents((data ?? []) as Event[]);
+      // Usuarios
+      const { data: usData, error: usError } = await supabase
+        .from("profiles")
+        .select("id, email, full_name")
+        .order("email");
+      if (usError) throw usError;
+      setAllUsers((usData ?? []) as Profile[]);
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Error cargando eventos");
+      Alert.alert("Error", e?.message ?? "Error cargando datos");
     } finally {
       setLoading(false);
     }
   };
 
-  const openCreateModal = () => {
-    setSelectedEvent(null);
-    setEventName("");
-    setEventLocation("");
-    setEventDate("");
-    setStartTime("");
-    setEndTime("");
-    setModalOpen(true);
-  };
-
-  const openEditModal = (event: Event) => {
-    setSelectedEvent(event);
-    setEventName(event.name);
-    setEventLocation(event.location || "");
-    setEventDate(event.event_date || "");
-    setStartTime(event.start_time || "");
-    setEndTime(event.end_time || "");
-    setModalOpen(true);
-  };
-
-  const closeModal = () => {
-    setModalOpen(false);
-    setSelectedEvent(null);
-  };
-
-  const saveEvent = async () => {
-    if (!eventName.trim()) {
+  const createEvent = async () => {
+    if (!newName.trim()) {
       Alert.alert("Error", "El nombre es obligatorio");
       return;
     }
 
     try {
-      const payload = {
-        name: eventName.trim(),
-        location: eventLocation.trim() || null,
-        event_date: eventDate || null,
-        start_time: startTime || null,
-        end_time: endTime || null,
-      };
+      const { data, error } = await supabase
+        .from("events")
+        .insert({
+          name: newName.trim(),
+          location: newLocation.trim() || null,
+          event_date: newDate || null,
+          start_time: newStart || null,
+          end_time: newEnd || null,
+        })
+        .select()
+        .single();
 
-      if (selectedEvent) {
-        // Editar
-        const { error } = await supabase
-          .from("events")
-          .update(payload)
-          .eq("id", selectedEvent.id);
-        if (error) throw error;
-      } else {
-        // Crear
-        const { error } = await supabase.from("events").insert(payload);
-        if (error) throw error;
+      if (error) throw error;
+
+      // Asignar usuarios
+      if (selectedUsers.length > 0 && data) {
+        const inserts = selectedUsers.map((uid) => ({
+          event_id: data.id,
+          user_id: uid,
+        }));
+        await supabase.from("event_staff").insert(inserts);
       }
 
-      Alert.alert("Éxito", selectedEvent ? "Evento actualizado" : "Evento creado");
-      closeModal();
-      loadEvents();
+      Alert.alert("Éxito", "Evento creado");
+      setShowCreate(false);
+      setNewName("");
+      setNewLocation("");
+      setNewDate("");
+      setNewStart("");
+      setNewEnd("");
+      setSelectedUsers([]);
+      loadData();
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "No se pudo guardar");
+      Alert.alert("Error", e?.message ?? "No se pudo crear");
     }
   };
 
-  const openStaffModal = async (event: Event) => {
-    setSelectedEvent(event);
-    setStaffModalOpen(true);
+  const expandEvent = async (event: Event) => {
+    if (expandedId === event.id) {
+      setExpandedId(null);
+      return;
+    }
 
+    setExpandedId(event.id);
+    setEditName(event.name);
+    setEditLocation(event.location || "");
+    setEditDate(event.event_date || "");
+    setEditStart(event.start_time || "");
+    setEditEnd(event.end_time || "");
+
+    // Cargar asignados
     try {
-      const { data: users, error: usersError } = await supabase
-        .from("profiles")
-        .select("id, email, full_name")
-        .order("email");
-
-      if (usersError) throw usersError;
-      setAllUsers((users ?? []) as Profile[]);
-
-      const { data: staff, error: staffError } = await supabase
+      const { data, error } = await supabase
         .from("event_staff")
         .select("user_id")
         .eq("event_id", event.id);
-
-      if (staffError) throw staffError;
-      setAssignedUsers((staff ?? []).map((s: any) => s.user_id));
+      if (error) throw error;
+      setAssignedUsers((data ?? []).map((s: any) => s.user_id));
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Error cargando personal");
+      setAssignedUsers([]);
     }
   };
 
-  const closeStaffModal = () => {
-    setStaffModalOpen(false);
-    setSelectedEvent(null);
+  const updateEvent = async () => {
+    if (!expandedId || !editName.trim()) {
+      Alert.alert("Error", "El nombre es obligatorio");
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from("events")
+        .update({
+          name: editName.trim(),
+          location: editLocation.trim() || null,
+          event_date: editDate || null,
+          start_time: editStart || null,
+          end_time: editEnd || null,
+        })
+        .eq("id", expandedId);
+
+      if (error) throw error;
+      Alert.alert("Éxito", "Evento actualizado");
+      setExpandedId(null);
+      loadData();
+    } catch (e: any) {
+      Alert.alert("Error", e?.message ?? "No se pudo actualizar");
+    }
   };
 
-  const toggleUser = async (userId: string) => {
-    if (!selectedEvent) return;
+  const toggleAssignment = async (userId: string) => {
+    if (!expandedId) return;
     const isAssigned = assignedUsers.includes(userId);
 
     try {
       if (isAssigned) {
-        const { error } = await supabase
+        await supabase
           .from("event_staff")
           .delete()
-          .eq("event_id", selectedEvent.id)
+          .eq("event_id", expandedId)
           .eq("user_id", userId);
-        if (error) throw error;
         setAssignedUsers((prev) => prev.filter((id) => id !== userId));
       } else {
-        const { error } = await supabase
+        await supabase
           .from("event_staff")
-          .insert({ event_id: selectedEvent.id, user_id: userId });
-        if (error) throw error;
+          .insert({ event_id: expandedId, user_id: userId });
         setAssignedUsers((prev) => [...prev, userId]);
       }
     } catch (e: any) {
@@ -185,225 +200,326 @@ export default function AdminScreen() {
   };
 
   useEffect(() => {
-    loadEvents();
+    loadData();
   }, []);
+
+  const getUserLabel = (u: Profile) => u.full_name || u.email || u.id;
 
   return (
     <View style={s.container}>
-      <Text style={s.h1}>Administración</Text>
+      <Text style={s.h1}>Panel Admin</Text>
+      <Text style={s.subtitle}>
+        Usuario: admin@porvos.com | Rol: ADMIN
+      </Text>
 
-      <View style={s.topButtons}>
-        <Pressable style={[s.btn, s.btnCreate]} onPress={openCreateModal}>
-          <Text style={s.btnText}>+ Crear evento</Text>
+      {/* Crear evento */}
+      {!showCreate ? (
+        <Pressable style={s.btnCreate} onPress={() => setShowCreate(true)}>
+          <Text style={s.btnText}>Crear evento</Text>
         </Pressable>
+      ) : (
+        <View style={s.createBox}>
+          <Text style={s.boxTitle}>Crear evento</Text>
 
-        <Pressable
-          style={[s.btn, s.btnRefresh, loading && { opacity: 0.6 }]}
-          onPress={loadEvents}
-          disabled={loading}
-        >
-          <Text style={s.btnText}>Actualizar</Text>
-        </Pressable>
-      </View>
+          <Text style={s.label}>Nombre del evento</Text>
+          <TextInput
+            style={s.input}
+            value={newName}
+            onChangeText={setNewName}
+            placeholder="Nombre"
+          />
 
-      <FlatList
-        data={events}
-        keyExtractor={(item) => item.id}
-        style={s.list}
-        renderItem={({ item }) => (
-          <View style={s.card}>
-            <Text style={s.title}>{item.name}</Text>
-            <Text style={s.subtitle}>
-              {item.event_date || "Sin fecha"} | {item.location || "Sin ubicación"}
-            </Text>
+          <Text style={s.label}>Lugar</Text>
+          <TextInput
+            style={s.input}
+            value={newLocation}
+            onChangeText={setNewLocation}
+            placeholder="Ubicación"
+          />
 
-            <View style={s.row}>
-              <Pressable style={[s.btnSm, s.btnEdit]} onPress={() => openEditModal(item)}>
-                <Text style={s.btnSmText}>Editar</Text>
-              </Pressable>
+          <Text style={s.label}>Fecha</Text>
+          <TextInput
+            style={s.input}
+            value={newDate}
+            onChangeText={setNewDate}
+            placeholder="YYYY-MM-DD"
+          />
 
-              <Pressable style={[s.btnSm, s.btnStaff]} onPress={() => openStaffModal(item)}>
-                <Text style={s.btnSmText}>Personal</Text>
-              </Pressable>
+          <View style={s.timeRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.label}>Hora de inicio</Text>
+              <TextInput
+                style={s.input}
+                value={newStart}
+                onChangeText={setNewStart}
+                placeholder="HH:MM"
+              />
+            </View>
+            <View style={{ flex: 1, marginLeft: 8 }}>
+              <Text style={s.label}>Hora de fin (opcional)</Text>
+              <TextInput
+                style={s.input}
+                value={newEnd}
+                onChangeText={setNewEnd}
+                placeholder="HH:MM"
+              />
             </View>
           </View>
-        )}
-        ListEmptyComponent={
-          <Text style={s.empty}>{loading ? "Cargando..." : "Sin eventos"}</Text>
-        }
-      />
 
-      <Pressable style={[s.btn, s.btnDanger]} onPress={onSignOut}>
-        <Text style={s.btnText}>Cerrar sesión</Text>
+          <Text style={s.label}>Asignar a operador (opcional)</Text>
+          <Text style={s.subtitle}>
+            Operadores encontrados: {allUsers.length} | Seleccionados: {selectedUsers.length}
+          </Text>
+          <ScrollView horizontal style={s.userScroll}>
+            {allUsers.map((u) => {
+              const selected = selectedUsers.includes(u.id);
+              return (
+                <Pressable
+                  key={u.id}
+                  style={[s.userChip, selected && s.userChipSelected]}
+                  onPress={() =>
+                    setSelectedUsers((prev) =>
+                      prev.includes(u.id)
+                        ? prev.filter((id) => id !== u.id)
+                        : [...prev, u.id]
+                    )
+                  }
+                >
+                  <Text style={[s.userChipText, selected && s.userChipTextSelected]}>
+                    {getUserLabel(u)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          <Pressable style={s.btnSave} onPress={createEvent}>
+            <Text style={s.btnText}>Crear y asignar</Text>
+          </Pressable>
+
+          <Pressable
+            style={s.btnCancel}
+            onPress={() => {
+              setShowCreate(false);
+              setNewName("");
+              setNewLocation("");
+              setNewDate("");
+              setNewStart("");
+              setNewEnd("");
+              setSelectedUsers([]);
+            }}
+          >
+            <Text style={s.btnText}>Cancelar</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* Lista de eventos */}
+      <ScrollView style={s.eventsList}>
+        {loading ? (
+          <Text style={s.empty}>Cargando...</Text>
+        ) : events.length === 0 ? (
+          <Text style={s.empty}>No hay eventos</Text>
+        ) : (
+          events.map((ev) => {
+            const expanded = expandedId === ev.id;
+            return (
+              <View key={ev.id} style={s.eventCard}>
+                <Pressable onPress={() => expandEvent(ev)}>
+                  <Text style={s.eventName}>{ev.name}</Text>
+                  <Text style={s.eventInfo}>
+                    {ev.event_date || "Sin fecha"} | {ev.location || "Sin ubicación"}
+                  </Text>
+                </Pressable>
+
+                {expanded && (
+                  <View style={s.expandedContent}>
+                    <Text style={s.label}>Nombre del evento</Text>
+                    <TextInput
+                      style={s.input}
+                      value={editName}
+                      onChangeText={setEditName}
+                    />
+
+                    <Text style={s.label}>Lugar</Text>
+                    <TextInput
+                      style={s.input}
+                      value={editLocation}
+                      onChangeText={setEditLocation}
+                    />
+
+                    <Text style={s.label}>Fecha</Text>
+                    <TextInput
+                      style={s.input}
+                      value={editDate}
+                      onChangeText={setEditDate}
+                    />
+
+                    <View style={s.timeRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.label}>Hora inicio</Text>
+                        <TextInput
+                          style={s.input}
+                          value={editStart}
+                          onChangeText={setEditStart}
+                        />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 8 }}>
+                        <Text style={s.label}>Hora fin</Text>
+                        <TextInput
+                          style={s.input}
+                          value={editEnd}
+                          onChangeText={setEditEnd}
+                        />
+                      </View>
+                    </View>
+
+                    <Pressable style={s.btnUpdate} onPress={updateEvent}>
+                      <Text style={s.btnText}>Actualizar evento</Text>
+                    </Pressable>
+
+                    <Text style={s.label}>Asignar operadores</Text>
+                    <ScrollView horizontal style={s.userScroll}>
+                      {allUsers.map((u) => {
+                        const assigned = assignedUsers.includes(u.id);
+                        return (
+                          <Pressable
+                            key={u.id}
+                            style={[s.userChip, assigned && s.userChipSelected]}
+                            onPress={() => toggleAssignment(u.id)}
+                          >
+                            <Text
+                              style={[
+                                s.userChipText,
+                                assigned && s.userChipTextSelected,
+                              ]}
+                            >
+                              {getUserLabel(u)}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
+
+      <Pressable style={s.btnRefresh} onPress={loadData}>
+        <Text style={s.btnText}>Actualizar</Text>
       </Pressable>
 
-      {/* Modal crear/editar */}
-      <Modal visible={modalOpen} transparent animationType="slide">
-        <View style={s.overlay}>
-          <View style={s.modal}>
-            <ScrollView>
-              <Text style={s.h2}>{selectedEvent ? "Editar" : "Crear"} evento</Text>
-
-              <Text style={s.label}>Nombre *</Text>
-              <TextInput
-                style={s.input}
-                value={eventName}
-                onChangeText={setEventName}
-                placeholder="Nombre del evento"
-              />
-
-              <Text style={s.label}>Ubicación</Text>
-              <TextInput
-                style={s.input}
-                value={eventLocation}
-                onChangeText={setEventLocation}
-                placeholder="Lugar"
-              />
-
-              <Text style={s.label}>Fecha (YYYY-MM-DD)</Text>
-              <TextInput
-                style={s.input}
-                value={eventDate}
-                onChangeText={setEventDate}
-                placeholder="2026-02-05"
-              />
-
-              <Text style={s.label}>Hora inicio (HH:MM)</Text>
-              <TextInput
-                style={s.input}
-                value={startTime}
-                onChangeText={setStartTime}
-                placeholder="14:00"
-              />
-
-              <Text style={s.label}>Hora fin (HH:MM)</Text>
-              <TextInput
-                style={s.input}
-                value={endTime}
-                onChangeText={setEndTime}
-                placeholder="18:00"
-              />
-
-              <View style={s.row}>
-                <Pressable style={[s.btnSm, s.btnCancel]} onPress={closeModal}>
-                  <Text style={s.btnSmText}>Cancelar</Text>
-                </Pressable>
-                <Pressable style={[s.btnSm, s.btnSave]} onPress={saveEvent}>
-                  <Text style={s.btnSmText}>Guardar</Text>
-                </Pressable>
-              </View>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Modal personal */}
-      <Modal visible={staffModalOpen} transparent animationType="slide">
-        <View style={s.overlay}>
-          <View style={s.modal}>
-            <Text style={s.h2}>Personal - {selectedEvent?.name}</Text>
-
-            <FlatList
-              data={allUsers}
-              keyExtractor={(item) => item.id}
-              style={{ maxHeight: 400 }}
-              renderItem={({ item }) => {
-                const assigned = assignedUsers.includes(item.id);
-                return (
-                  <Pressable
-                    style={[s.userItem, assigned && s.userAssigned]}
-                    onPress={() => toggleUser(item.id)}
-                  >
-                    <Text style={s.userName}>
-                      {item.full_name || item.email || item.id}
-                    </Text>
-                    <Text style={s.userCheck}>{assigned ? "✓" : "○"}</Text>
-                  </Pressable>
-                );
-              }}
-            />
-
-            <Pressable style={[s.btn, s.btnClose, { marginTop: 12 }]} onPress={closeStaffModal}>
-              <Text style={s.btnText}>Cerrar</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+      <Pressable style={s.btnLogout} onPress={onSignOut}>
+        <Text style={s.btnText}>Cerrar sesión</Text>
+      </Pressable>
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  container: { flex: 1, padding: 12 },
-  h1: { fontSize: 20, fontWeight: "800", marginBottom: 10 },
-  h2: { fontSize: 16, fontWeight: "800", marginBottom: 12 },
+  container: { flex: 1, padding: 16, backgroundColor: "#f9fafb" },
+  h1: { fontSize: 22, fontWeight: "800", marginBottom: 4 },
+  subtitle: { fontSize: 12, opacity: 0.7, marginBottom: 12 },
   
-  topButtons: { flexDirection: "row", gap: 8, marginBottom: 10 },
+  btnCreate: {
+    backgroundColor: "#16a34a",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  btnText: { color: "white", fontWeight: "700", fontSize: 14 },
   
-  list: { flex: 1 },
-  empty: { fontSize: 13, opacity: 0.7, textAlign: "center", marginTop: 16 },
-  
-  card: {
+  createBox: {
+    backgroundColor: "white",
+    padding: 16,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#e5e7eb",
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 8,
-    backgroundColor: "white",
+    marginBottom: 12,
   },
-  title: { fontSize: 14, fontWeight: "700", marginBottom: 2 },
-  subtitle: { fontSize: 11, opacity: 0.7, marginBottom: 8 },
+  boxTitle: { fontSize: 16, fontWeight: "800", marginBottom: 12 },
   
-  row: { flexDirection: "row", gap: 6 },
-  
-  btn: { padding: 10, borderRadius: 6, alignItems: "center" },
-  btnCreate: { flex: 1, backgroundColor: "#16a34a" },
-  btnRefresh: { flex: 1, backgroundColor: "#374151" },
-  btnDanger: { backgroundColor: "#dc2626", marginTop: 8 },
-  btnClose: { backgroundColor: "#374151" },
-  btnText: { color: "white", fontWeight: "700", fontSize: 13 },
-  
-  btnSm: { flex: 1, padding: 8, borderRadius: 6, alignItems: "center" },
-  btnEdit: { backgroundColor: "#2563eb" },
-  btnStaff: { backgroundColor: "#16a34a" },
-  btnCancel: { backgroundColor: "#6b7280" },
-  btnSave: { backgroundColor: "#16a34a" },
-  btnSmText: { color: "white", fontWeight: "700", fontSize: 12 },
-  
-  label: { fontSize: 11, fontWeight: "600", marginTop: 8, marginBottom: 3 },
+  label: { fontSize: 12, fontWeight: "600", marginTop: 8, marginBottom: 4 },
   input: {
     borderWidth: 1,
     borderColor: "#d1d5db",
     borderRadius: 6,
-    padding: 8,
-    marginBottom: 6,
-    fontSize: 13,
-  },
-  
-  overlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    padding: 16,
-  },
-  modal: {
-    backgroundColor: "white",
-    borderRadius: 12,
-    padding: 16,
-    maxHeight: "85%",
-  },
-  
-  userItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
     padding: 10,
+    fontSize: 14,
+  },
+  timeRow: { flexDirection: "row" },
+  
+  userScroll: { marginTop: 8, marginBottom: 12 },
+  userChip: {
+    backgroundColor: "white",
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginRight: 6,
+  },
+  userChipSelected: {
+    backgroundColor: "#111827",
+    borderColor: "#111827",
+  },
+  userChipText: { fontSize: 12, color: "#374151" },
+  userChipTextSelected: { color: "white" },
+  
+  btnSave: {
+    backgroundColor: "#111827",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 12,
+  },
+  btnCancel: {
+    backgroundColor: "#6b7280",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  
+  eventsList: { flex: 1, marginBottom: 12 },
+  empty: { fontSize: 14, opacity: 0.7, textAlign: "center", marginTop: 20 },
+  
+  eventCard: {
+    backgroundColor: "white",
+    padding: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#e5e7eb",
-    borderRadius: 6,
-    marginBottom: 6,
+    marginBottom: 8,
   },
-  userAssigned: { backgroundColor: "#dcfce7", borderColor: "#16a34a" },
-  userName: { fontSize: 12, flex: 1 },
-  userCheck: { fontSize: 14, fontWeight: "800" },
+  eventName: { fontSize: 14, fontWeight: "700", marginBottom: 2 },
+  eventInfo: { fontSize: 12, opacity: 0.7 },
+  
+  expandedContent: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: "#e5e7eb" },
+  btnUpdate: {
+    backgroundColor: "#2563eb",
+    padding: 10,
+    borderRadius: 6,
+    alignItems: "center",
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  
+  btnRefresh: {
+    backgroundColor: "#374151",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  btnLogout: {
+    backgroundColor: "#dc2626",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
 });
