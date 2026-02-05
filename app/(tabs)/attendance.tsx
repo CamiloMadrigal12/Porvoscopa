@@ -14,9 +14,9 @@ type EventRow = {
   id: string;
   name: string;
   location: string | null;
-  event_date: string | null; // YYYY-MM-DD
-  start_time: string | null; // HH:mm:ss
-  end_time: string | null; // HH:mm:ss
+  event_date: string | null;
+  start_time: string | null;
+  end_time: string | null;
 };
 
 type AttendanceRow = {
@@ -28,7 +28,6 @@ type AttendanceRow = {
   phone: string | null;
   invited_by: string | null;
   scanned_at: string | null;
-  // 👇 viene del join
   event?: {
     id: string;
     name: string;
@@ -44,11 +43,10 @@ type AttendanceInsert = {
   neighborhood: string;
   phone: string | null;
   invited_by: string | null;
-  scanned_by: string; // ✅ para que no quede NULL
-  created_by: string; // ✅ para que no quede NULL
+  scanned_by: string;
+  created_by: string;
 };
 
-// ✅ Lista fija (sin tabla neighborhoods)
 const BARRIOS_VEREDAS: string[] = [
   "La Veta",
   "Zarzal La Luz",
@@ -99,11 +97,6 @@ function fmtEventLine(ev: EventRow) {
   return `${date} ${st} ${et} ${loc}`.replace(/\s+/g, " ").trim();
 }
 
-/**
- * Convierte (event_date + end_time) a Date local.
- * - Si no hay end_time, usa start_time.
- * - Si no hay ninguna hora, retorna null (no filtramos).
- */
 function endsAtDate(ev: EventRow): Date | null {
   if (!ev.event_date) return null;
   const time = ev.end_time || ev.start_time;
@@ -125,8 +118,6 @@ function isEventPast(ev: EventRow): boolean {
 
 export default function AttendanceScreen() {
   const [loading, setLoading] = useState(false);
-
-  // ✅ eventos asignados al operador
   const [assignedEvents, setAssignedEvents] = useState<EventRow[]>([]);
   const [selectedEventId, setSelectedEventId] = useState<string>("");
 
@@ -134,21 +125,17 @@ export default function AttendanceScreen() {
     return assignedEvents.find((e) => e.id === selectedEventId) ?? null;
   }, [assignedEvents, selectedEventId]);
 
-  // ✅ lista de asistentes del evento seleccionado
   const [attendees, setAttendees] = useState<AttendanceRow[]>([]);
 
-  // Form asistentes
+  // ✅ ORDEN NUEVO: Nombre, Documento, Celular, Barrio, Quién invita
   const [fullName, setFullName] = useState("");
   const [document, setDocument] = useState("");
-  const [neighborhood, setNeighborhood] = useState("");
   const [phone, setPhone] = useState("");
+  const [neighborhood, setNeighborhood] = useState("");
   const [invitedBy, setInvitedBy] = useState("");
 
-  // Dropdown barrios
   const [showBarrioList, setShowBarrioList] = useState(false);
   const [barrioQuery, setBarrioQuery] = useState("");
-
-  // Dropdown eventos
   const [showEventList, setShowEventList] = useState(false);
 
   const canSave = useMemo(() => {
@@ -176,7 +163,6 @@ export default function AttendanceScreen() {
         return;
       }
 
-      // 1) ids asignados
       const staffRes = await supabase
         .from("event_staff")
         .select("event_id")
@@ -199,7 +185,6 @@ export default function AttendanceScreen() {
         return;
       }
 
-      // 2) eventos por ids
       const evRes = await supabase
         .from("events")
         .select("id,name,location,event_date,start_time,end_time")
@@ -207,11 +192,9 @@ export default function AttendanceScreen() {
 
       if (evRes.error) throw evRes.error;
 
-      // 3) filtrar pendientes
       let list = (evRes.data ?? []) as EventRow[];
       list = list.filter((ev) => !isEventPast(ev));
 
-      // 4) ordenar próximos primero
       list.sort((a, b) => {
         const ea = endsAtDate(a)?.getTime() ?? Number.MAX_SAFE_INTEGER;
         const eb = endsAtDate(b)?.getTime() ?? Number.MAX_SAFE_INTEGER;
@@ -220,7 +203,6 @@ export default function AttendanceScreen() {
 
       setAssignedEvents(list);
 
-      // mantener selección si existe; si no, escoger el primero
       setSelectedEventId((prev) => {
         if (prev && list.some((x) => x.id === prev)) return prev;
         return list[0]?.id ?? "";
@@ -284,7 +266,6 @@ export default function AttendanceScreen() {
     loadAssignedEvents();
   }, []);
 
-  // ✅ cada vez que cambia el evento seleccionado, recarga asistentes
   useEffect(() => {
     loadAttendeesForSelectedEvent(selectedEventId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -332,8 +313,8 @@ export default function AttendanceScreen() {
 
       setFullName("");
       setDocument("");
-      setNeighborhood("");
       setPhone("");
+      setNeighborhood("");
       setInvitedBy("");
       setShowBarrioList(false);
       setBarrioQuery("");
@@ -420,7 +401,7 @@ export default function AttendanceScreen() {
         </Pressable>
       </View>
 
-      {/* Registrar asistente */}
+      {/* ✅ ORDEN NUEVO: Nombre → Documento → Celular → Barrio → Quién invita */}
       <View style={styles.card}>
         <Text style={styles.h2}>Registrar asistente</Text>
 
@@ -441,8 +422,17 @@ export default function AttendanceScreen() {
           autoCapitalize="none"
         />
 
-        <Text style={styles.label}>Barrio / Vereda</Text>
+        <Text style={styles.label}>Celular</Text>
+        <TextInput
+          style={styles.input}
+          value={phone}
+          onChangeText={setPhone}
+          placeholder="Número de celular"
+          autoCapitalize="none"
+          keyboardType="phone-pad"
+        />
 
+        <Text style={styles.label}>Barrio / Vereda</Text>
         <Pressable
           style={[styles.input, { justifyContent: "center" }]}
           onPress={() => setShowBarrioList((v) => !v)}
@@ -483,16 +473,6 @@ export default function AttendanceScreen() {
             </ScrollView>
           </View>
         )}
-
-        <Text style={styles.label}>Teléfono</Text>
-        <TextInput
-          style={styles.input}
-          value={phone}
-          onChangeText={setPhone}
-          placeholder="Opcional"
-          autoCapitalize="none"
-          keyboardType="phone-pad"
-        />
 
         <Text style={styles.label}>Quién lo invita</Text>
         <TextInput
@@ -553,12 +533,11 @@ export default function AttendanceScreen() {
                     {a.document ? `| ${a.document}` : ""}
                   </Text>
                   <Text style={styles.small}>
-                    {a.neighborhood ? `${a.neighborhood}` : ""}{" "}
-                    {a.invited_by ? `| Invita: ${a.invited_by}` : ""}
+                    {a.phone ? `Cel: ${a.phone}` : ""}{" "}
+                    {a.neighborhood ? `| ${a.neighborhood}` : ""}
                   </Text>
                   <Text style={styles.small}>
-                    {a.event?.name ? `Evento: ${a.event.name}` : ""}
-                    {a.event?.event_date ? ` | ${a.event.event_date}` : ""}
+                    {a.invited_by ? `Invita: ${a.invited_by}` : ""}
                   </Text>
                 </View>
               ))

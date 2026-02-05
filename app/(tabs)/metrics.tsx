@@ -10,18 +10,17 @@ import {
 } from "react-native";
 import { supabase } from "../../src/lib/supabase";
 
-// ✅ Solo se importan en runtime (evita problemas si no está instalado en web)
 let FileSystem: any = null;
 let Sharing: any = null;
 if (Platform.OS !== "web") {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   FileSystem = require("expo-file-system");
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   Sharing = require("expo-sharing");
 }
 
-type BarrioRow = {
-  neighborhood: string;
+// ✅ CAMBIO: En lugar de por barrio, ahora por evento/reunión
+type EventAttendanceRow = {
+  event_name: string;
+  event_date: string | null;
   total: number;
 };
 
@@ -36,20 +35,14 @@ type AttendanceExportRow = {
   event_name: string | null;
   event_date: string | null;
   location: string | null;
-
   full_name: string | null;
   document: string | null;
   neighborhood: string | null;
   phone: string | null;
   invited_by: string | null;
-
   scanned_at: string | null;
-
-  // ✅ quién registró
   scanned_by_name?: string | null;
   scanned_by_email?: string | null;
-
-  // opcional si lo tienes en la vista
   created_at?: string | null;
 };
 
@@ -63,12 +56,10 @@ function toYYYYMMDD(d: Date) {
 function csvEscape(v: any) {
   if (v === null || v === undefined) return "";
   const s = String(v);
-  // ✅ como usamos ;, escapamos ; además de comillas/saltos
   if (/[;\n\r"]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
 
-// ✅ Excel en español: usa ; como delimitador
 function toCSV(
   rows: any[],
   headers: { key: string; label: string }[],
@@ -83,12 +74,10 @@ function toCSV(
 
 function formatISO(iso: string | null) {
   if (!iso) return "";
-  // "2026-02-02T20:22:34..." -> "2026-02-02 20:22"
   return String(iso).replace("T", " ").slice(0, 16);
 }
 
 async function downloadCSV(filename: string, csv: string) {
-  // ✅ BOM para Excel (acentos/tildes)
   const BOM = "\uFEFF";
   const content = BOM + csv;
 
@@ -130,15 +119,14 @@ async function downloadCSV(filename: string, csv: string) {
 
 export default function MetricsScreen() {
   const [loading, setLoading] = useState(true);
-
-  // ✅ control de rol
   const [me, setMe] = useState<Profile | null>(null);
 
   const [eventsMonth, setEventsMonth] = useState(0);
   const [attendanceMonth, setAttendanceMonth] = useState(0);
-  const [byBarrio, setByBarrio] = useState<BarrioRow[]>([]);
+  
+  // ✅ CAMBIO: Ahora guardamos asistencia por evento
+  const [byEvent, setByEvent] = useState<EventAttendanceRow[]>([]);
 
-  // ✅ desde inicio del mes (solo para métricas en pantalla)
   const [fromDate] = useState<string>(() => {
     const now = new Date();
     return toYYYYMMDD(new Date(now.getFullYear(), now.getMonth(), 1));
@@ -169,20 +157,17 @@ export default function MetricsScreen() {
       const profile = await loadMe();
       setMe(profile);
 
-      // ✅ permisos: no consultes más si no corresponde
       const allowed = profile?.role === "METRICAS" || profile?.role === "ADMIN";
       if (!profile || !allowed) {
         setEventsMonth(0);
         setAttendanceMonth(0);
-        setByBarrio([]);
+        setByEvent([]);
         return;
       }
 
       const monthStart = fromDate;
 
-      /* =========================
-         1) Eventos desde fromDate
-      ==========================*/
+      /* 1) Eventos desde fromDate */
       const evRes = await supabase
         .from("events")
         .select("id", { count: "exact", head: true })
@@ -191,9 +176,7 @@ export default function MetricsScreen() {
       if (evRes.error) throw evRes.error;
       setEventsMonth(evRes.count ?? 0);
 
-      /* =========================
-         2) Asistentes desde fromDate
-      ==========================*/
+      /* 2) Asistentes desde fromDate */
       const attRes = await supabase
         .from("attendance")
         .select("id", { count: "exact", head: true })
@@ -202,32 +185,57 @@ export default function MetricsScreen() {
       if (attRes.error) throw attRes.error;
       setAttendanceMonth(attRes.count ?? 0);
 
-      /* =========================
-         3) Por barrio / vereda (RPC)
-      ==========================*/
-      const barrioRes = await supabase.rpc("attendance_by_barrio_month", {
-        from_date: monthStart,
-      });
+      /* ✅ 3) Asistencia por evento (personas por reunión) */
+      const eventAttendanceRes = await supabase
+        .from("attendance")
+        .select(
+          `
+          event_id,
+          event:events (
+            name,
+            event_date
+          )
+        `
+        )
+        .gte("created_at", monthStart);
 
-      if (barrioRes.error) throw barrioRes.error;
-      setByBarrio((barrioRes.data ?? []) as BarrioRow[]);
+      if (eventAttendanceRes.error) throw eventAttendanceRes.error;
+
+      // Agrupar manualmente por evento
+      const eventMap = new Map<string, EventAttendanceRow>();
+
+      for (const row of eventAttendanceRes.data ?? []) {
+        const eventName = (row.event as any)?.name || "Sin nombre";
+        const eventDate = (row.event as any)?.event_date || null;
+        const key = row.event_id;
+
+        if (!eventMap.has(key)) {
+          eventMap.set(key, {
+            event_name: eventName,
+            event_date: eventDate,
+            total: 0,
+          });
+        }
+
+        const current = eventMap.get(key)!;
+        current.total += 1;
+      }
+
+      const eventList = Array.from(eventMap.values()).sort(
+        (a, b) => b.total - a.total
+      );
+
+      setByEvent(eventList);
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "No se pudieron cargar métricas");
       setEventsMonth(0);
       setAttendanceMonth(0);
-      setByBarrio([]);
+      setByEvent([]);
     } finally {
       setLoading(false);
     }
   };
 
-  /**
-   * ✅ ÚNICO EXPORT (el que quieres):
-   * CSV PLANO por columnas, Excel-friendly, con "Registrado por"
-   *
-   * - Descarga TODO histórico (sin filtro)
-   * - Si algún día quieres filtrar por mes: descomenta el .gte("created_at", fromDate)
-   */
   const exportAttendanceCSV = async () => {
     try {
       if (!isAllowed) {
@@ -242,9 +250,6 @@ export default function MetricsScreen() {
         )
         .order("event_date", { ascending: false })
         .order("scanned_at", { ascending: false });
-
-      // ✅ Si quieres filtrar solo desde el mes actual, activa esto:
-      // query.gte("created_at", fromDate);
 
       const { data, error } = await query;
       if (error) throw error;
@@ -262,8 +267,8 @@ export default function MetricsScreen() {
         location: r.location ?? "",
         full_name: r.full_name ?? "",
         document: r.document ?? "",
-        neighborhood: r.neighborhood ?? "",
         phone: r.phone ?? "",
+        neighborhood: r.neighborhood ?? "",
         invited_by: r.invited_by ?? "",
         scanned_at: formatISO(r.scanned_at ?? null),
         registered_by: r.scanned_by_name || r.scanned_by_email || "",
@@ -275,14 +280,13 @@ export default function MetricsScreen() {
         { key: "location", label: "Lugar" },
         { key: "full_name", label: "Nombre asistente" },
         { key: "document", label: "Documento" },
+        { key: "phone", label: "Celular" },
         { key: "neighborhood", label: "Barrio/Vereda" },
-        { key: "phone", label: "Telefono" },
         { key: "invited_by", label: "Invitado por" },
         { key: "scanned_at", label: "Escaneado en" },
         { key: "registered_by", label: "Registrado por" },
       ]);
 
-      // ✅ Nombre fijo (menos enredos)
       await downloadCSV("asistencias.csv", csv);
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "No se pudo exportar asistencias");
@@ -291,7 +295,6 @@ export default function MetricsScreen() {
 
   const onSignOut = async () => {
     await supabase.auth.signOut();
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { router } = require("expo-router");
     router.replace("/login");
   };
@@ -321,7 +324,6 @@ export default function MetricsScreen() {
         </View>
       ) : (
         <>
-          {/* Encabezado + actualizar */}
           <View style={styles.card}>
             <Text style={styles.h2}>Métricas del mes</Text>
             <Text style={styles.small}>Desde: {fromDate}</Text>
@@ -335,37 +337,37 @@ export default function MetricsScreen() {
             </Pressable>
           </View>
 
-          {/* KPI 1 */}
           <View style={styles.card}>
             <Text style={styles.kpiLabel}>Reuniones desde {fromDate}</Text>
             <Text style={styles.kpiValue}>{loading ? "…" : eventsMonth}</Text>
           </View>
 
-          {/* KPI 2 */}
           <View style={styles.card}>
             <Text style={styles.kpiLabel}>Asistentes desde {fromDate}</Text>
             <Text style={styles.kpiValue}>{loading ? "…" : attendanceMonth}</Text>
           </View>
 
-          {/* Barrio/Vereda */}
+          {/* ✅ CAMBIO: Ahora muestra personas por reunión */}
           <View style={styles.card}>
-            <Text style={styles.h2}>Asistencia por barrio / vereda</Text>
+            <Text style={styles.h2}>Asistencia por reunión</Text>
 
             {loading ? (
               <Text style={styles.small}>Cargando…</Text>
-            ) : byBarrio.length === 0 ? (
+            ) : byEvent.length === 0 ? (
               <Text style={styles.small}>Sin registros.</Text>
             ) : (
-              byBarrio.map((b) => (
-                <View key={b.neighborhood} style={styles.row}>
-                  <Text style={styles.rowLeft}>{b.neighborhood}</Text>
-                  <Text style={styles.rowRight}>{b.total}</Text>
+              byEvent.map((e) => (
+                <View key={`${e.event_name}-${e.event_date}`} style={styles.row}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowLeft}>{e.event_name}</Text>
+                    <Text style={styles.rowDate}>{e.event_date || "Sin fecha"}</Text>
+                  </View>
+                  <Text style={styles.rowRight}>{e.total}</Text>
                 </View>
               ))
             )}
           </View>
 
-          {/* ✅ Descargar (solo 1 botón) + cerrar sesión */}
           <View style={styles.card}>
             <Text style={styles.h2}>Descargar</Text>
 
@@ -376,8 +378,6 @@ export default function MetricsScreen() {
             >
               <Text style={styles.btnText}>Descargar asistencias (CSV)</Text>
             </Pressable>
-
-           
 
             <Pressable
               style={[styles.btnDanger, { marginTop: 12 }, loading && { opacity: 0.7 }]}
@@ -415,12 +415,14 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: 6,
+    alignItems: "center",
+    paddingVertical: 8,
     borderTopWidth: 1,
     borderTopColor: "#f3f4f6",
   },
-  rowLeft: { fontSize: 13 },
-  rowRight: { fontSize: 13, fontWeight: "800" },
+  rowLeft: { fontSize: 13, fontWeight: "700" },
+  rowDate: { fontSize: 11, opacity: 0.7, marginTop: 2 },
+  rowRight: { fontSize: 16, fontWeight: "800", marginLeft: 8 },
 
   btn: {
     backgroundColor: "#111827",
