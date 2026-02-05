@@ -28,18 +28,12 @@ type Profile = {
   full_name: string | null;
 };
 
-type EventStaff = {
-  event_id: string;
-  user_id: string;
-  profiles?: Profile;
-};
-
 export default function AdminScreen() {
   const [loading, setLoading] = useState(true);
   const [events, setEvents] = useState<Event[]>([]);
   
-  // Modal editar evento
-  const [editModalOpen, setEditModalOpen] = useState(false);
+  // Modal crear/editar
+  const [modalOpen, setModalOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [eventName, setEventName] = useState("");
   const [eventLocation, setEventLocation] = useState("");
@@ -47,7 +41,7 @@ export default function AdminScreen() {
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   
-  // Modal gestionar staff
+  // Modal personal
   const [staffModalOpen, setStaffModalOpen] = useState(false);
   const [allUsers, setAllUsers] = useState<Profile[]>([]);
   const [assignedUsers, setAssignedUsers] = useState<string[]>([]);
@@ -69,6 +63,16 @@ export default function AdminScreen() {
     }
   };
 
+  const openCreateModal = () => {
+    setSelectedEvent(null);
+    setEventName("");
+    setEventLocation("");
+    setEventDate("");
+    setStartTime("");
+    setEndTime("");
+    setModalOpen(true);
+  };
+
   const openEditModal = (event: Event) => {
     setSelectedEvent(event);
     setEventName(event.name);
@@ -76,45 +80,47 @@ export default function AdminScreen() {
     setEventDate(event.event_date || "");
     setStartTime(event.start_time || "");
     setEndTime(event.end_time || "");
-    setEditModalOpen(true);
+    setModalOpen(true);
   };
 
-  const closeEditModal = () => {
-    setEditModalOpen(false);
+  const closeModal = () => {
+    setModalOpen(false);
     setSelectedEvent(null);
-    setEventName("");
-    setEventLocation("");
-    setEventDate("");
-    setStartTime("");
-    setEndTime("");
   };
 
   const saveEvent = async () => {
-    if (!selectedEvent) return;
     if (!eventName.trim()) {
-      Alert.alert("Error", "El nombre del evento es obligatorio");
+      Alert.alert("Error", "El nombre es obligatorio");
       return;
     }
 
     try {
-      const { error } = await supabase
-        .from("events")
-        .update({
-          name: eventName.trim(),
-          location: eventLocation.trim() || null,
-          event_date: eventDate || null,
-          start_time: startTime || null,
-          end_time: endTime || null,
-        })
-        .eq("id", selectedEvent.id);
+      const payload = {
+        name: eventName.trim(),
+        location: eventLocation.trim() || null,
+        event_date: eventDate || null,
+        start_time: startTime || null,
+        end_time: endTime || null,
+      };
 
-      if (error) throw error;
+      if (selectedEvent) {
+        // Editar
+        const { error } = await supabase
+          .from("events")
+          .update(payload)
+          .eq("id", selectedEvent.id);
+        if (error) throw error;
+      } else {
+        // Crear
+        const { error } = await supabase.from("events").insert(payload);
+        if (error) throw error;
+      }
 
-      Alert.alert("Éxito", "Evento actualizado correctamente");
-      closeEditModal();
+      Alert.alert("Éxito", selectedEvent ? "Evento actualizado" : "Evento creado");
+      closeModal();
       loadEvents();
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "No se pudo actualizar el evento");
+      Alert.alert("Error", e?.message ?? "No se pudo guardar");
     }
   };
 
@@ -123,7 +129,6 @@ export default function AdminScreen() {
     setStaffModalOpen(true);
 
     try {
-      // Cargar todos los usuarios
       const { data: users, error: usersError } = await supabase
         .from("profiles")
         .select("id, email, full_name")
@@ -132,16 +137,13 @@ export default function AdminScreen() {
       if (usersError) throw usersError;
       setAllUsers((users ?? []) as Profile[]);
 
-      // Cargar staff asignado a este evento
       const { data: staff, error: staffError } = await supabase
         .from("event_staff")
         .select("user_id")
         .eq("event_id", event.id);
 
       if (staffError) throw staffError;
-      
-      const assigned = (staff ?? []).map((s: any) => s.user_id);
-      setAssignedUsers(assigned);
+      setAssignedUsers((staff ?? []).map((s: any) => s.user_id));
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "Error cargando personal");
     }
@@ -150,37 +152,30 @@ export default function AdminScreen() {
   const closeStaffModal = () => {
     setStaffModalOpen(false);
     setSelectedEvent(null);
-    setAllUsers([]);
-    setAssignedUsers([]);
   };
 
-  const toggleUserAssignment = async (userId: string) => {
+  const toggleUser = async (userId: string) => {
     if (!selectedEvent) return;
-
     const isAssigned = assignedUsers.includes(userId);
 
     try {
       if (isAssigned) {
-        // Quitar
         const { error } = await supabase
           .from("event_staff")
           .delete()
           .eq("event_id", selectedEvent.id)
           .eq("user_id", userId);
-
         if (error) throw error;
         setAssignedUsers((prev) => prev.filter((id) => id !== userId));
       } else {
-        // Agregar
         const { error } = await supabase
           .from("event_staff")
           .insert({ event_id: selectedEvent.id, user_id: userId });
-
         if (error) throw error;
         setAssignedUsers((prev) => [...prev, userId]);
       }
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "No se pudo actualizar asignación");
+      Alert.alert("Error", e?.message ?? "Error");
     }
   };
 
@@ -194,118 +189,107 @@ export default function AdminScreen() {
   }, []);
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.h1}>Administración</Text>
+    <View style={s.container}>
+      <Text style={s.h1}>Administración</Text>
 
-      <Pressable
-        style={[styles.btn, loading && { opacity: 0.7 }]}
-        onPress={loadEvents}
-        disabled={loading}
-      >
-        <Text style={styles.btnText}>
-          {loading ? "Cargando..." : "Actualizar"}
-        </Text>
-      </Pressable>
+      <View style={s.topButtons}>
+        <Pressable style={[s.btn, s.btnCreate]} onPress={openCreateModal}>
+          <Text style={s.btnText}>+ Crear evento</Text>
+        </Pressable>
+
+        <Pressable
+          style={[s.btn, s.btnRefresh, loading && { opacity: 0.6 }]}
+          onPress={loadEvents}
+          disabled={loading}
+        >
+          <Text style={s.btnText}>Actualizar</Text>
+        </Pressable>
+      </View>
 
       <FlatList
         data={events}
         keyExtractor={(item) => item.id}
-        style={styles.list}
+        style={s.list}
         renderItem={({ item }) => (
-          <View style={styles.card}>
-            <Text style={styles.title}>{item.name}</Text>
-            <Text style={styles.small}>
+          <View style={s.card}>
+            <Text style={s.title}>{item.name}</Text>
+            <Text style={s.subtitle}>
               {item.event_date || "Sin fecha"} | {item.location || "Sin ubicación"}
             </Text>
 
-            <View style={styles.buttonRow}>
-              <Pressable
-                style={[styles.btnSmall, { backgroundColor: "#2563eb" }]}
-                onPress={() => openEditModal(item)}
-              >
-                <Text style={styles.btnText}>Editar</Text>
+            <View style={s.row}>
+              <Pressable style={[s.btnSm, s.btnEdit]} onPress={() => openEditModal(item)}>
+                <Text style={s.btnSmText}>Editar</Text>
               </Pressable>
 
-              <Pressable
-                style={[styles.btnSmall, { backgroundColor: "#16a34a" }]}
-                onPress={() => openStaffModal(item)}
-              >
-                <Text style={styles.btnText}>Personal</Text>
+              <Pressable style={[s.btnSm, s.btnStaff]} onPress={() => openStaffModal(item)}>
+                <Text style={s.btnSmText}>Personal</Text>
               </Pressable>
             </View>
           </View>
         )}
         ListEmptyComponent={
-          <Text style={styles.empty}>
-            {loading ? "Cargando..." : "No hay eventos"}
-          </Text>
+          <Text style={s.empty}>{loading ? "Cargando..." : "Sin eventos"}</Text>
         }
       />
 
-      <Pressable style={[styles.btnDanger]} onPress={onSignOut}>
-        <Text style={styles.btnText}>Cerrar sesión</Text>
+      <Pressable style={[s.btn, s.btnDanger]} onPress={onSignOut}>
+        <Text style={s.btnText}>Cerrar sesión</Text>
       </Pressable>
 
-      {/* MODAL: Editar evento */}
-      <Modal visible={editModalOpen} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+      {/* Modal crear/editar */}
+      <Modal visible={modalOpen} transparent animationType="slide">
+        <View style={s.overlay}>
+          <View style={s.modal}>
             <ScrollView>
-              <Text style={styles.h2}>Editar evento</Text>
+              <Text style={s.h2}>{selectedEvent ? "Editar" : "Crear"} evento</Text>
 
-              <Text style={styles.label}>Nombre *</Text>
+              <Text style={s.label}>Nombre *</Text>
               <TextInput
-                style={styles.input}
+                style={s.input}
                 value={eventName}
                 onChangeText={setEventName}
                 placeholder="Nombre del evento"
               />
 
-              <Text style={styles.label}>Ubicación</Text>
+              <Text style={s.label}>Ubicación</Text>
               <TextInput
-                style={styles.input}
+                style={s.input}
                 value={eventLocation}
                 onChangeText={setEventLocation}
                 placeholder="Lugar"
               />
 
-              <Text style={styles.label}>Fecha (YYYY-MM-DD)</Text>
+              <Text style={s.label}>Fecha (YYYY-MM-DD)</Text>
               <TextInput
-                style={styles.input}
+                style={s.input}
                 value={eventDate}
                 onChangeText={setEventDate}
                 placeholder="2026-02-05"
               />
 
-              <Text style={styles.label}>Hora inicio (HH:MM)</Text>
+              <Text style={s.label}>Hora inicio (HH:MM)</Text>
               <TextInput
-                style={styles.input}
+                style={s.input}
                 value={startTime}
                 onChangeText={setStartTime}
                 placeholder="14:00"
               />
 
-              <Text style={styles.label}>Hora fin (HH:MM)</Text>
+              <Text style={s.label}>Hora fin (HH:MM)</Text>
               <TextInput
-                style={styles.input}
+                style={s.input}
                 value={endTime}
                 onChangeText={setEndTime}
                 placeholder="18:00"
               />
 
-              <View style={styles.buttonRow}>
-                <Pressable
-                  style={[styles.btnSmall, { backgroundColor: "#6b7280" }]}
-                  onPress={closeEditModal}
-                >
-                  <Text style={styles.btnText}>Cancelar</Text>
+              <View style={s.row}>
+                <Pressable style={[s.btnSm, s.btnCancel]} onPress={closeModal}>
+                  <Text style={s.btnSmText}>Cancelar</Text>
                 </Pressable>
-
-                <Pressable
-                  style={[styles.btnSmall, { backgroundColor: "#16a34a" }]}
-                  onPress={saveEvent}
-                >
-                  <Text style={styles.btnText}>Guardar</Text>
+                <Pressable style={[s.btnSm, s.btnSave]} onPress={saveEvent}>
+                  <Text style={s.btnSmText}>Guardar</Text>
                 </Pressable>
               </View>
             </ScrollView>
@@ -313,45 +297,34 @@ export default function AdminScreen() {
         </View>
       </Modal>
 
-      {/* MODAL: Gestionar personal */}
+      {/* Modal personal */}
       <Modal visible={staffModalOpen} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.h2}>Personal asignado</Text>
-            <Text style={styles.small}>
-              Evento: {selectedEvent?.name || ""}
-            </Text>
+        <View style={s.overlay}>
+          <View style={s.modal}>
+            <Text style={s.h2}>Personal - {selectedEvent?.name}</Text>
 
             <FlatList
               data={allUsers}
               keyExtractor={(item) => item.id}
-              style={styles.userList}
+              style={{ maxHeight: 400 }}
               renderItem={({ item }) => {
-                const isAssigned = assignedUsers.includes(item.id);
+                const assigned = assignedUsers.includes(item.id);
                 return (
                   <Pressable
-                    style={[
-                      styles.userItem,
-                      isAssigned && styles.userItemAssigned,
-                    ]}
-                    onPress={() => toggleUserAssignment(item.id)}
+                    style={[s.userItem, assigned && s.userAssigned]}
+                    onPress={() => toggleUser(item.id)}
                   >
-                    <Text style={styles.userName}>
+                    <Text style={s.userName}>
                       {item.full_name || item.email || item.id}
                     </Text>
-                    <Text style={styles.userStatus}>
-                      {isAssigned ? "✓ Asignado" : "○ Sin asignar"}
-                    </Text>
+                    <Text style={s.userCheck}>{assigned ? "✓" : "○"}</Text>
                   </Pressable>
                 );
               }}
             />
 
-            <Pressable
-              style={[styles.btn, { marginTop: 10 }]}
-              onPress={closeStaffModal}
-            >
-              <Text style={styles.btnText}>Cerrar</Text>
+            <Pressable style={[s.btn, s.btnClose, { marginTop: 12 }]} onPress={closeStaffModal}>
+              <Text style={s.btnText}>Cerrar</Text>
             </Pressable>
           </View>
         </View>
@@ -360,91 +333,77 @@ export default function AdminScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16 },
-  h1: { fontSize: 22, fontWeight: "800", marginBottom: 12 },
-  h2: { fontSize: 18, fontWeight: "800", marginBottom: 12 },
-  small: { fontSize: 12, opacity: 0.8, marginBottom: 8 },
-  label: { fontSize: 13, fontWeight: "600", marginTop: 10, marginBottom: 4 },
+const s = StyleSheet.create({
+  container: { flex: 1, padding: 12 },
+  h1: { fontSize: 20, fontWeight: "800", marginBottom: 10 },
+  h2: { fontSize: 16, fontWeight: "800", marginBottom: 12 },
   
-  list: { flex: 1, marginTop: 12 },
-  empty: { fontSize: 14, opacity: 0.8, textAlign: "center", marginTop: 20 },
+  topButtons: { flexDirection: "row", gap: 8, marginBottom: 10 },
+  
+  list: { flex: 1 },
+  empty: { fontSize: 13, opacity: 0.7, textAlign: "center", marginTop: 16 },
   
   card: {
     borderWidth: 1,
     borderColor: "#e5e7eb",
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
-    backgroundColor: "white",
-  },
-  title: { fontSize: 16, fontWeight: "800", marginBottom: 4 },
-  
-  buttonRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginTop: 10,
-  },
-  
-  btn: {
-    backgroundColor: "#111827",
-    padding: 14,
-    borderRadius: 10,
-    alignItems: "center",
-  },
-  btnSmall: {
-    flex: 1,
-    backgroundColor: "#111827",
-    padding: 12,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-  btnDanger: {
-    backgroundColor: "#dc2626",
-    padding: 14,
-    borderRadius: 10,
-    alignItems: "center",
-    marginTop: 10,
-  },
-  btnText: { color: "white", fontWeight: "800", fontSize: 14 },
-  
-  input: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
     borderRadius: 8,
     padding: 10,
     marginBottom: 8,
+    backgroundColor: "white",
+  },
+  title: { fontSize: 14, fontWeight: "700", marginBottom: 2 },
+  subtitle: { fontSize: 11, opacity: 0.7, marginBottom: 8 },
+  
+  row: { flexDirection: "row", gap: 6 },
+  
+  btn: { padding: 10, borderRadius: 6, alignItems: "center" },
+  btnCreate: { flex: 1, backgroundColor: "#16a34a" },
+  btnRefresh: { flex: 1, backgroundColor: "#374151" },
+  btnDanger: { backgroundColor: "#dc2626", marginTop: 8 },
+  btnClose: { backgroundColor: "#374151" },
+  btnText: { color: "white", fontWeight: "700", fontSize: 13 },
+  
+  btnSm: { flex: 1, padding: 8, borderRadius: 6, alignItems: "center" },
+  btnEdit: { backgroundColor: "#2563eb" },
+  btnStaff: { backgroundColor: "#16a34a" },
+  btnCancel: { backgroundColor: "#6b7280" },
+  btnSave: { backgroundColor: "#16a34a" },
+  btnSmText: { color: "white", fontWeight: "700", fontSize: 12 },
+  
+  label: { fontSize: 11, fontWeight: "600", marginTop: 8, marginBottom: 3 },
+  input: {
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 6,
+    padding: 8,
+    marginBottom: 6,
+    fontSize: 13,
   },
   
-  modalOverlay: {
+  overlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
-    padding: 20,
+    padding: 16,
   },
-  modalContent: {
+  modal: {
     backgroundColor: "white",
-    borderRadius: 16,
-    padding: 20,
-    maxHeight: "80%",
+    borderRadius: 12,
+    padding: 16,
+    maxHeight: "85%",
   },
   
-  userList: { marginTop: 12, maxHeight: 400 },
   userItem: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: 12,
+    padding: 10,
     borderWidth: 1,
     borderColor: "#e5e7eb",
-    borderRadius: 8,
-    marginBottom: 8,
-    backgroundColor: "white",
+    borderRadius: 6,
+    marginBottom: 6,
   },
-  userItemAssigned: {
-    backgroundColor: "#dcfce7",
-    borderColor: "#16a34a",
-  },
-  userName: { fontSize: 14, fontWeight: "600", flex: 1 },
-  userStatus: { fontSize: 12, opacity: 0.8 },
+  userAssigned: { backgroundColor: "#dcfce7", borderColor: "#16a34a" },
+  userName: { fontSize: 12, flex: 1 },
+  userCheck: { fontSize: 14, fontWeight: "800" },
 });
