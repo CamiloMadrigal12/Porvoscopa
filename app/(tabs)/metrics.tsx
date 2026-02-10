@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { supabase } from "../../src/lib/supabase";
@@ -126,6 +127,9 @@ export default function MetricsScreen() {
   
   // ✅ CAMBIO: Ahora guardamos asistencia por evento
   const [byEvent, setByEvent] = useState<EventAttendanceRow[]>([]);
+  
+  // ✅ NUEVO: Buscador
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [fromDate] = useState<string>(() => {
     const now = new Date();
@@ -135,6 +139,18 @@ export default function MetricsScreen() {
   const isAllowed = useMemo(() => {
     return me?.role === "METRICAS" || me?.role === "ADMIN";
   }, [me]);
+
+  // ✅ NUEVO: Filtrar eventos por búsqueda
+  const filteredEvents = useMemo(() => {
+    if (!searchQuery.trim()) return byEvent;
+    
+    const query = searchQuery.toLowerCase();
+    return byEvent.filter((e) => {
+      const name = e.event_name.toLowerCase();
+      const date = (e.event_date || "").toLowerCase();
+      return name.includes(query) || date.includes(query);
+    });
+  }, [byEvent, searchQuery]);
 
   const loadMe = async () => {
     const { data: authData } = await supabase.auth.getUser();
@@ -351,20 +367,49 @@ export default function MetricsScreen() {
           <View style={styles.card}>
             <Text style={styles.h2}>Asistencia por reunión</Text>
 
+            {/* ✅ NUEVO: Buscador */}
+            <View style={styles.searchContainer}>
+              <Text style={styles.searchIcon}>🔍</Text>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Buscar por nombre o fecha..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholderTextColor="#9ca3af"
+              />
+              {searchQuery.length > 0 && (
+                <Pressable
+                  onPress={() => setSearchQuery("")}
+                  style={styles.clearButton}
+                >
+                  <Text style={styles.clearText}>✕</Text>
+                </Pressable>
+              )}
+            </View>
+
             {loading ? (
               <Text style={styles.small}>Cargando…</Text>
-            ) : byEvent.length === 0 ? (
-              <Text style={styles.small}>Sin registros.</Text>
+            ) : filteredEvents.length === 0 ? (
+              <Text style={styles.small}>
+                {searchQuery ? "No se encontraron reuniones." : "Sin registros."}
+              </Text>
             ) : (
-              byEvent.map((e) => (
-                <View key={`${e.event_name}-${e.event_date}`} style={styles.row}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowLeft}>{e.event_name}</Text>
-                    <Text style={styles.rowDate}>{e.event_date || "Sin fecha"}</Text>
+              <>
+                {searchQuery && (
+                  <Text style={styles.resultCount}>
+                    {filteredEvents.length} de {byEvent.length} reuniones
+                  </Text>
+                )}
+                {filteredEvents.map((e) => (
+                  <View key={`${e.event_name}-${e.event_date}`} style={styles.row}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rowLeft}>{e.event_name}</Text>
+                      <Text style={styles.rowDate}>{e.event_date || "Sin fecha"}</Text>
+                    </View>
+                    <Text style={styles.rowRight}>{e.total}</Text>
                   </View>
-                  <Text style={styles.rowRight}>{e.total}</Text>
-                </View>
-              ))
+                ))}
+              </>
             )}
           </View>
 
@@ -411,6 +456,44 @@ const styles = StyleSheet.create({
 
   kpiLabel: { fontSize: 13, opacity: 0.8 },
   kpiValue: { fontSize: 28, fontWeight: "900", marginTop: 4 },
+
+  // ✅ NUEVO: Estilos del buscador
+  searchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f3f4f6",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+  },
+  searchIcon: {
+    fontSize: 16,
+    marginRight: 8,
+    opacity: 0.6,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: "#111827",
+    padding: 0,
+  },
+  clearButton: {
+    padding: 4,
+  },
+  clearText: {
+    fontSize: 18,
+    color: "#6b7280",
+    fontWeight: "600",
+  },
+  resultCount: {
+    fontSize: 12,
+    color: "#6b7280",
+    marginBottom: 8,
+    fontStyle: "italic",
+  },
 
   row: {
     flexDirection: "row",
