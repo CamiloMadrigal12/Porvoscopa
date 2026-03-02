@@ -54,6 +54,11 @@ function toYYYYMMDD(d: Date) {
   return `${y}-${m}-${day}`;
 }
 
+function isValidYYYYMMDD(s: string) {
+  // formato simple YYYY-MM-DD
+  return /^\d{4}-\d{2}-\d{2}$/.test((s || "").trim());
+}
+
 function csvEscape(v: any) {
   if (v === null || v === undefined) return "";
   const s = String(v);
@@ -122,19 +127,23 @@ export default function MetricsScreen() {
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<Profile | null>(null);
 
-  const [eventsMonth, setEventsMonth] = useState(0);
-  const [attendanceMonth, setAttendanceMonth] = useState(0);
-  
+  const [eventsCount, setEventsCount] = useState(0);
+  const [attendanceCount, setAttendanceCount] = useState(0);
+
   // ✅ CAMBIO: Ahora guardamos asistencia por evento
   const [byEvent, setByEvent] = useState<EventAttendanceRow[]>([]);
-  
+
   // ✅ NUEVO: Buscador
   const [searchQuery, setSearchQuery] = useState("");
 
-  const [fromDate] = useState<string>(() => {
-    const now = new Date();
-    return toYYYYMMDD(new Date(now.getFullYear(), now.getMonth(), 1));
-  });
+  /**
+   * ✅ CORRECCIÓN:
+   * Antes filtrabas automáticamente por el primer día del mes, por eso solo veías “4”.
+   * Ahora:
+   * - Por defecto NO filtra (histórico completo).
+   * - Si quieres filtrar, puedes escribir una fecha YYYY-MM-DD y tocar “Aplicar”.
+   */
+  const [fromDate, setFromDate] = useState<string>(""); // "" = sin filtro
 
   const isAllowed = useMemo(() => {
     return me?.role === "METRICAS" || me?.role === "ADMIN";
@@ -143,7 +152,7 @@ export default function MetricsScreen() {
   // ✅ NUEVO: Filtrar eventos por búsqueda
   const filteredEvents = useMemo(() => {
     if (!searchQuery.trim()) return byEvent;
-    
+
     const query = searchQuery.toLowerCase();
     return byEvent.filter((e) => {
       const name = e.event_name.toLowerCase();
@@ -175,34 +184,42 @@ export default function MetricsScreen() {
 
       const allowed = profile?.role === "METRICAS" || profile?.role === "ADMIN";
       if (!profile || !allowed) {
-        setEventsMonth(0);
-        setAttendanceMonth(0);
+        setEventsCount(0);
+        setAttendanceCount(0);
         setByEvent([]);
         return;
       }
 
-      const monthStart = fromDate;
+      const hasFromDate = isValidYYYYMMDD(fromDate);
 
-      /* 1) Eventos desde fromDate */
-      const evRes = await supabase
+      /* 1) Conteo de eventos (histórico o desde fromDate) */
+      let evQuery = supabase
         .from("events")
-        .select("id", { count: "exact", head: true })
-        .gte("event_date", monthStart);
+        .select("id", { count: "exact", head: true });
 
+      if (hasFromDate) {
+        evQuery = evQuery.gte("event_date", fromDate);
+      }
+
+      const evRes = await evQuery;
       if (evRes.error) throw evRes.error;
-      setEventsMonth(evRes.count ?? 0);
+      setEventsCount(evRes.count ?? 0);
 
-      /* 2) Asistentes desde fromDate */
-      const attRes = await supabase
+      /* 2) Conteo de asistencias (histórico o desde fromDate) */
+      let attQuery = supabase
         .from("attendance")
-        .select("id", { count: "exact", head: true })
-        .gte("created_at", monthStart);
+        .select("id", { count: "exact", head: true });
 
+      if (hasFromDate) {
+        attQuery = attQuery.gte("created_at", fromDate);
+      }
+
+      const attRes = await attQuery;
       if (attRes.error) throw attRes.error;
-      setAttendanceMonth(attRes.count ?? 0);
+      setAttendanceCount(attRes.count ?? 0);
 
-      /* ✅ 3) Asistencia por evento (personas por reunión) */
-      const eventAttendanceRes = await supabase
+      /* 3) Asistencia por evento (personas por reunión) */
+      let eventAttendanceQuery = supabase
         .from("attendance")
         .select(
           `
@@ -212,9 +229,13 @@ export default function MetricsScreen() {
             event_date
           )
         `
-        )
-        .gte("created_at", monthStart);
+        );
 
+      if (hasFromDate) {
+        eventAttendanceQuery = eventAttendanceQuery.gte("created_at", fromDate);
+      }
+
+      const eventAttendanceRes = await eventAttendanceQuery;
       if (eventAttendanceRes.error) throw eventAttendanceRes.error;
 
       // Agrupar manualmente por evento
@@ -244,8 +265,8 @@ export default function MetricsScreen() {
       setByEvent(eventList);
     } catch (e: any) {
       Alert.alert("Error", e?.message ?? "No se pudieron cargar métricas");
-      setEventsMonth(0);
-      setAttendanceMonth(0);
+      setEventsCount(0);
+      setAttendanceCount(0);
       setByEvent([]);
     } finally {
       setLoading(false);
@@ -315,10 +336,39 @@ export default function MetricsScreen() {
     router.replace("/login");
   };
 
+  const applyFromDate = () => {
+    const trimmed = (fromDate || "").trim();
+    if (trimmed.length === 0) {
+      // sin filtro
+      loadMetrics();
+      return;
+    }
+    if (!isValidYYYYMMDD(trimmed)) {
+      Alert.alert("Fecha inválida", "Usa el formato YYYY-MM-DD (ej: 2026-01-01).");
+      return;
+    }
+    loadMetrics();
+  };
+
+  const setMonthStart = () => {
+    const now = new Date();
+    setFromDate(toYYYYMMDD(new Date(now.getFullYear(), now.getMonth(), 1)));
+  };
+
+  const clearFromDate = () => {
+    setFromDate("");
+  };
+
   useEffect(() => {
     loadMetrics();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const filterLabel = useMemo(() => {
+    const trimmed = (fromDate || "").trim();
+    if (!isValidYYYYMMDD(trimmed)) return "Histórico (sin filtro)";
+    return `Desde: ${trimmed}`;
+  }, [fromDate]);
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -334,33 +384,76 @@ export default function MetricsScreen() {
             No tienes permiso para ver métricas. (Requiere rol METRICAS o ADMIN)
           </Text>
 
-          <Pressable style={[styles.btnDanger, { marginTop: 10 }]} onPress={onSignOut}>
+          <Pressable
+            style={[styles.btnDanger, { marginTop: 10 }]}
+            onPress={onSignOut}
+          >
             <Text style={styles.btnText}>Cerrar sesión</Text>
           </Pressable>
         </View>
       ) : (
         <>
           <View style={styles.card}>
-            <Text style={styles.h2}>Métricas del mes</Text>
-            <Text style={styles.small}>Desde: {fromDate}</Text>
+            <Text style={styles.h2}>Filtro</Text>
+            <Text style={styles.small}>{filterLabel}</Text>
 
-            <Pressable
-              style={[styles.btnGray, { marginTop: 10 }, loading && { opacity: 0.7 }]}
-              onPress={loadMetrics}
-              disabled={loading}
-            >
-              <Text style={styles.btnText}>{loading ? "Cargando…" : "Actualizar"}</Text>
-            </Pressable>
+            <View style={{ marginTop: 10 }}>
+              <Text style={[styles.small, { marginBottom: 6, opacity: 0.9 }]}>
+                Fecha desde (YYYY-MM-DD) — déjalo vacío para ver todo:
+              </Text>
+
+              <View style={styles.dateRow}>
+                <TextInput
+                  style={styles.dateInput}
+                  placeholder="YYYY-MM-DD"
+                  value={fromDate}
+                  onChangeText={setFromDate}
+                  placeholderTextColor="#9ca3af"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <Pressable
+                  style={[styles.btnGraySm, loading && { opacity: 0.7 }]}
+                  onPress={setMonthStart}
+                  disabled={loading}
+                >
+                  <Text style={styles.btnTextSm}>Mes</Text>
+                </Pressable>
+
+                <Pressable
+                  style={[styles.btnGraySm, loading && { opacity: 0.7 }]}
+                  onPress={clearFromDate}
+                  disabled={loading}
+                >
+                  <Text style={styles.btnTextSm}>Todo</Text>
+                </Pressable>
+              </View>
+
+              <Pressable
+                style={[
+                  styles.btnGray,
+                  { marginTop: 10 },
+                  loading && { opacity: 0.7 },
+                ]}
+                onPress={applyFromDate}
+                disabled={loading}
+              >
+                <Text style={styles.btnText}>
+                  {loading ? "Cargando…" : "Aplicar / Actualizar"}
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.kpiLabel}>Reuniones desde {fromDate}</Text>
-            <Text style={styles.kpiValue}>{loading ? "…" : eventsMonth}</Text>
+            <Text style={styles.kpiLabel}>Reuniones ({filterLabel})</Text>
+            <Text style={styles.kpiValue}>{loading ? "…" : eventsCount}</Text>
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.kpiLabel}>Asistentes desde {fromDate}</Text>
-            <Text style={styles.kpiValue}>{loading ? "…" : attendanceMonth}</Text>
+            <Text style={styles.kpiLabel}>Asistentes ({filterLabel})</Text>
+            <Text style={styles.kpiValue}>{loading ? "…" : attendanceCount}</Text>
           </View>
 
           {/* ✅ CAMBIO: Ahora muestra personas por reunión */}
@@ -425,7 +518,11 @@ export default function MetricsScreen() {
             </Pressable>
 
             <Pressable
-              style={[styles.btnDanger, { marginTop: 12 }, loading && { opacity: 0.7 }]}
+              style={[
+                styles.btnDanger,
+                { marginTop: 12 },
+                loading && { opacity: 0.7 },
+              ]}
               onPress={onSignOut}
               disabled={loading}
             >
@@ -456,6 +553,32 @@ const styles = StyleSheet.create({
 
   kpiLabel: { fontSize: 13, opacity: 0.8 },
   kpiValue: { fontSize: 28, fontWeight: "900", marginTop: 4 },
+
+  dateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  dateInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: "#111827",
+    backgroundColor: "#fff",
+  },
+  btnGraySm: {
+    backgroundColor: "#374151",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  btnTextSm: { color: "white", fontWeight: "800", fontSize: 12 },
 
   // ✅ NUEVO: Estilos del buscador
   searchContainer: {
